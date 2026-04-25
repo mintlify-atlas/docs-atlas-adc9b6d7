@@ -1,0 +1,151 @@
+---
+title: "Texture2D loading and FrameBuffer in Beetle Engine"
+description: "Create Texture2D from image files or raw pixel data, bind to texture slots, draw with Renderer2D, and use FrameBuffer for off-screen render-to-texture passes."
+---
+
+Beetle loads and manages GPU textures through the abstract `Texture2D` class. You create textures with static factory methods, bind them to numbered slots, and pass them directly to `Renderer2D::DrawQuad`. The underlying implementation uses `stb_image` for file loading and OpenGL texture objects for GPU upload.
+
+## `Texture2D`
+
+`Texture2D` extends the base `Texture` interface, which defines the following methods:
+
+| Method | Description |
+|---|---|
+| `GetWidth() const` | Returns the texture width in pixels. |
+| `GetHeight() const` | Returns the texture height in pixels. |
+| `GetRendererID() const` | Returns the underlying OpenGL texture object ID. |
+| `SetData(void* data, uint32_t size)` | Uploads raw pixel data to the GPU after creation. |
+| `Bind(uint32_t slot = 0) const` | Binds the texture to the given texture unit slot. |
+
+### Creating from a file
+
+Pass a filesystem path to any image format supported by `stb_image`:
+
+```cpp
+Ref<Texture2D> checkerboard = Texture2D::Create("assets/textures/checkerboard.png");
+Ref<Texture2D> beetle       = Texture2D::Create("assets/textures/beetle.png");
+```
+
+<Note>
+  Beetle uses `stb_image` for decoding, so PNG, JPG, BMP, TGA, GIF, HDR, and PSD files are all supported. RGBA channels are preferred; if the source image has no alpha channel the loader uses RGB. The pixel origin is flipped vertically on load to match OpenGL's bottom-left UV convention.
+</Note>
+
+### Creating from dimensions (blank texture)
+
+You can allocate a texture of a given size and fill it with raw pixel data using `SetData`. This is how `Renderer2D::Init` creates its internal 1×1 white texture used for solid-color quads:
+
+```cpp
+// 1×1 opaque white texture
+Ref<Texture2D> white = Texture2D::Create(1, 1);
+uint32_t whitePixel = 0xffffffff; // RGBA: 255, 255, 255, 255
+white->SetData(&whitePixel, sizeof(uint32_t));
+
+// 256×256 blank texture you fill later
+Ref<Texture2D> canvas = Texture2D::Create(256, 256);
+canvas->SetData(myPixelBuffer, 256 * 256 * 4);
+```
+
+## Texture slots
+
+OpenGL allows multiple textures to be bound simultaneously to numbered *texture units* (slots 0–31). Beetle's batch renderer keeps a slot table of up to 32 textures per flush. When you draw a textured quad, the renderer finds or assigns a slot for that texture, and the fragment shader uses the slot index stored in the vertex data to sample the correct `sampler2D`.
+
+You can bind a texture manually to a specific slot:
+
+```cpp
+texture->Bind(0); // bind to texture unit 0
+texture->Bind(3); // bind to texture unit 3
+```
+
+In practice, you rarely bind textures manually — `Renderer2D` handles slot assignment automatically during `Flush`.
+
+## Drawing textures with Renderer2D
+
+Load a texture in `OnAttach`, then pass it to `DrawQuad` or `DrawRotatedQuad` in `OnUpdate`:
+
+```cpp
+// OnAttach
+m_CheckerBoard = Beetle::Texture2D::Create("assets/textures/checkerboard.png");
+
+// OnUpdate
+Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+
+// Tile 10× over a large background quad
+Beetle::Renderer2D::DrawQuad(
+    { 0.0f, 0.0f, -0.1f },
+    { 20.0f, 20.0f },
+    m_CheckerBoard,
+    10.0f  // tilingFactor
+);
+
+// Spinning textured quad (rotation is in degrees — the engine converts internally)
+Beetle::Renderer2D::DrawRotatedQuad(
+    { -2.0f, 0.0f, 0.0f },
+    { 1.0f, 1.0f },
+    m_Rotation,      // degrees; pass raw degrees, not glm::radians()
+    m_CheckerBoard,
+    20.0f  // tilingFactor
+);
+
+Beetle::Renderer2D::EndScene();
+```
+
+See the [Renderer2D page](/rendering/renderer2d) for the full `DrawQuad` overload reference and an explanation of `tilingFactor` and `tintColor`.
+
+## FrameBuffer
+
+`FrameBuffer` is Beetle's render-to-texture abstraction. Instead of drawing directly to the window's default framebuffer, you bind a `FrameBuffer`, render your scene into it, and then sample its color attachment as a texture in a subsequent pass. This is the foundation for post-processing, UI viewports (e.g. an editor scene view), and shadow maps.
+
+### Creating a framebuffer
+
+```cpp
+Beetle::FrameBufferSpecification spec;
+spec.Width  = 1280;
+spec.Height = 720;
+
+Ref<FrameBuffer> framebuffer = FrameBuffer::Create(spec);
+```
+
+`FrameBufferSpecification` fields:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `Width` | `uint32_t` | — | Width in pixels. |
+| `Height` | `uint32_t` | — | Height in pixels. |
+| `Samples` | `uint32_t` | `1` | MSAA sample count. |
+| `SwapChainTarget` | `bool` | `false` | Set to `true` to target the default framebuffer. |
+
+### Rendering into a framebuffer
+
+```cpp
+framebuffer->Bind();
+
+Beetle::RendererCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+Beetle::RendererCommand::Clear();
+
+Beetle::Renderer2D::BeginScene(camera);
+// ... draw calls ...
+Beetle::Renderer2D::EndScene();
+
+framebuffer->Unbind();
+```
+
+### Reading the color attachment
+
+After rendering into the framebuffer, retrieve the OpenGL texture ID of the color attachment and use it directly — for example, to display the scene inside an ImGui image widget:
+
+```cpp
+uint32_t colorAttachmentID = framebuffer->GetColorAttachmentRendererID();
+ImGui::Image(
+    reinterpret_cast<void*>(static_cast<uint64_t>(colorAttachmentID)),
+    ImVec2{ viewportWidth, viewportHeight },
+    ImVec2{ 0, 1 }, ImVec2{ 1, 0 }  // flip V for OpenGL convention
+);
+```
+
+### Resizing
+
+Call `Resize` whenever the viewport dimensions change. This recreates the underlying OpenGL texture and depth-stencil renderbuffer at the new size:
+
+```cpp
+framebuffer->Resize(newWidth, newHeight);
+```

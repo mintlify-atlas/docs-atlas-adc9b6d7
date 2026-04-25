@@ -1,0 +1,92 @@
+---
+title: "Setting up the Beetle Engine development environment"
+description: "Learn how to clone Beetle Engine, install prerequisites, generate Visual Studio 2022 project files with Premake5, and understand the three build configurations."
+---
+
+Beetle Engine uses Premake5 to generate Visual Studio solution files from a single `premake5.lua` script. Once you have the prerequisites in place, the entire setup takes only a few commands. This page walks you through cloning the repository, generating the solution, and understanding how output directories and build configurations are structured.
+
+<Warning>
+  Beetle Engine only supports **Windows x64**. x86, macOS, Linux, iOS, and Android builds are explicitly disabled at the compiler level and will produce a hard error.
+</Warning>
+
+## Prerequisites
+
+Before you begin, make sure you have the following installed:
+
+- **Visual Studio 2022** — the only supported IDE for building Beetle
+- **Premake5** — the build system used to generate the `.sln` and `.vcxproj` files
+- **Windows x64** — no other platform is supported at this time
+
+## Setting up the project
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the repository and initialise all vendor submodules (spdlog, GLFW, Glad, ImGui, glm):
+
+    ```bash
+    git clone --recurse-submodules https://github.com/Sam-xiexielaoshi/Beetle.git
+    cd Beetle
+    ```
+
+    If you already cloned without `--recurse-submodules`, run:
+
+    ```bash
+    git submodule update --init --recursive
+    ```
+  </Step>
+
+  <Step title="Generate Visual Studio solution files">
+    Run Premake5 from the repository root to generate `Beetle.sln` and all project files:
+
+    ```bash
+    premake5 vs2022
+    ```
+
+    Alternatively, you can double-click the provided helper script:
+
+    ```
+    scripts/Win-GenProjects.bat
+    ```
+
+    This script calls the bundled Premake5 binary at `vendor/bin/premake/premake5.exe` and targets Visual Studio 2022.
+  </Step>
+
+  <Step title="Open the solution in Visual Studio">
+    Open `Beetle.sln` in Visual Studio 2022. The solution contains three projects:
+
+    - **Beetle** — the engine itself, built as a static library
+    - **Sandbox** — a console application for testing engine features
+    - **Stag** — a second console application; set as the default startup project
+  </Step>
+
+  <Step title="Select a build configuration and build">
+    Choose a configuration from the Visual Studio toolbar, then build the solution (`Ctrl+Shift+B`).
+
+    | Configuration | Preprocessor define | Runtime | Description |
+    |---|---|---|---|
+    | Debug | `BT_DEBUG` | Debug | Full debug symbols, assertions enabled via `BT_ENABLE_ASSERTS` |
+    | Release | `BT_Release` | Release | Optimised build, no debug symbols |
+    | Dist | `BT_DIST` | Release | Distribution build, optimised, no diagnostics |
+
+    In Debug mode, `BT_ENABLE_ASSERTS` is automatically defined, which activates `BT_ASSERT` and `BT_CORE_ASSERT` macros throughout the engine.
+  </Step>
+</Steps>
+
+## Output directories
+
+Premake places compiled binaries and intermediate object files in directories derived from the active configuration, operating system, and CPU architecture:
+
+```
+bin/{Config}-{OS}-{Arch}/{Project}/
+bin-int/{Config}-{OS}-{Arch}/{Project}/
+```
+
+For example, a Debug build on Windows x64 produces:
+
+```
+bin/Debug-windows-x86_64/Beetle/
+bin/Debug-windows-x86_64/Sandbox/
+bin/Debug-windows-x86_64/Stag/
+```
+
+Intermediate object files go to the corresponding `bin-int/` tree and can be safely deleted without affecting the final binaries.

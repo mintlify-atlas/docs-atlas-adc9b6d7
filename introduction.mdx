@@ -1,0 +1,73 @@
+---
+title: "Beetle Engine: C++ Game Engine from Scratch"
+description: "Beetle Engine is a modern C++ game engine built from the ground up, focusing on clean architecture and deep understanding of how real engines work."
+---
+
+Beetle Engine is a learning-focused, modern C++ game engine built from scratch. Rather than wrapping an existing engine, Beetle constructs every foundational system — from event handling and logging to 2D rendering and an Entity Component System — with a deliberate emphasis on understanding *why* each design decision is made, not just *how* to implement it.
+
+The engine targets Windows with OpenGL rendering, uses Premake5 for multi-project build configuration, and ships with the **Stag** editor application as a first-class client. A **Sandbox** project provides a quick testing ground for engine features during development.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, generate project files, and run your first Beetle application in minutes.
+  </Card>
+  <Card title="Project Structure" icon="folder-tree" href="/project-structure">
+    Understand how the engine, editor, sandbox, and vendor libraries are organized.
+  </Card>
+  <Card title="Core Systems" icon="gears" href="/core/application">
+    Learn about the Application loop, Layer stack, logging, and event system.
+  </Card>
+  <Card title="Rendering" icon="display" href="/rendering/overview">
+    Explore the 2D batch renderer, shaders, textures, and camera abstractions.
+  </Card>
+  <Card title="Scene & ECS" icon="sitemap" href="/scene/overview">
+    Manage entities and components using the entt-backed scene system.
+  </Card>
+  <Card title="Stag Editor" icon="pen-to-square" href="/editor/stag-editor">
+    Build and extend the Stag editor application on top of Beetle's layer system.
+  </Card>
+</CardGroup>
+
+## What Beetle Engine includes
+
+Beetle is in active early development. The following systems are currently implemented:
+
+<CardGroup cols={2}>
+  <Card title="Logging" icon="terminal">
+    Structured, leveled logging via spdlog with separate core and client loggers.
+  </Card>
+  <Card title="Event System" icon="bell">
+    Type-safe events dispatched through category bitmasks and a templated dispatcher.
+  </Card>
+  <Card title="Layer Stack" icon="layer-group">
+    Composable layers and overlays that receive updates and events in order.
+  </Card>
+  <Card title="2D Renderer" icon="vector-square">
+    Batched quad drawing with color and texture support via OpenGL.
+  </Card>
+  <Card title="Entity Component System" icon="cubes">
+    Scene management backed by the entt registry with built-in components.
+  </Card>
+  <Card title="ImGui Integration" icon="sliders">
+    Real-time debug overlays rendered as an engine overlay layer.
+  </Card>
+</CardGroup>
+
+<Steps>
+  <Step title="Clone and configure">
+    Clone the repository and run `premake5 vs2022` to generate Visual Studio project files.
+  </Step>
+  <Step title="Open the solution">
+    Open `Beetle.sln` in Visual Studio 2022. The **Stag** project is set as the startup project.
+  </Step>
+  <Step title="Build and run">
+    Select **Debug** or **Release** configuration, build the solution, and run **Stag** or **Sandbox**.
+  </Step>
+  <Step title="Extend the engine">
+    Subclass `Beetle::Layer`, push it onto the application layer stack, and start building.
+  </Step>
+</Steps>
+
+<Note>
+Beetle Engine currently targets **Windows x64** only. macOS, Linux, iOS, and Android support is not yet available.
+</Note>

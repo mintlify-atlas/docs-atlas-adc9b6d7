@@ -1,0 +1,248 @@
+---
+title: "Sandbox: rapid prototyping in Beetle Engine"
+description: "The Sandbox project is a ConsoleApp client for rapid prototyping. Use it to experiment with layers, the Renderer2D API, and new engine features before integrating them into Stag."
+---
+
+The Sandbox project is a lightweight client application that links against Beetle Engine as a `ConsoleApp`. Its sole purpose is to give you a fast, low-friction environment for trying out new engine features, testing rendering code, and validating ideas without touching the main Stag editor. Because it is structured identically to any other Beetle client, everything you learn in Sandbox transfers directly to production code.
+
+## Project structure
+
+`SandboxApp.cpp` follows the same pattern as `StagEditorApp.cpp`: subclass `Application`, push one or more layers in the constructor, and provide the `CreateApplication` factory.
+
+```cpp SandboxApp.cpp
+#include <Beetle.h>
+#include <Beetle/Core/EntryPoint.h>
+#include "Sandbox2D.h"
+
+class Sandbox : public Beetle::Application
+{
+public:
+    Sandbox()
+    {
+        //PushLayer(new ExampleLayer());
+        PushLayer(new Sandbox2D());
+    }
+    ~Sandbox() {}
+};
+
+Beetle::Application* Beetle::CreateApplication()
+{
+    return new Sandbox();
+}
+```
+
+The commented-out `ExampleLayer` line shows the previous default layer; `Sandbox2D` replaced it as the primary test bed for the `Renderer2D` API.
+
+## Sandbox2D layer
+
+`Sandbox2D` is the active layer in the Sandbox application. It exercises the `Renderer2D` batch renderer, the `OrthographicCameraController`, and the ImGui stats overlay.
+
+### Class declaration
+
+```cpp Sandbox2D.h
+class Sandbox2D : public Beetle::Layer
+{
+public:
+    Sandbox2D();
+    virtual ~Sandbox2D() = default;
+    virtual void OnAttach() override;
+    virtual void OnDetach() override;
+
+    void OnUpdate(Beetle::TimeStamp ts) override;
+    virtual void OnImGuiRender() override;
+    void OnEvent(Beetle::Event& event) override;
+
+private:
+    Beetle::OrthographicCameraController m_CameraController;
+
+    // temp
+    Beetle::Ref<Beetle::VertexArray> m_SquareVA;
+    Beetle::Ref<Beetle::Shader> m_flatColorShader;
+
+    Beetle::Ref<Beetle::Texture2D> m_CheckerBoard;
+
+    glm::vec4 m_SquareColor = { 0.2f, 0.3f, 0.8f, 1.0f };
+};
+```
+
+`m_CameraController` is initialized with a 16:9 aspect ratio and rotation enabled (`true`). `m_CheckerBoard` loads a texture in `OnAttach` and is used as a tiled background and on a rotating quad.
+
+### What it renders
+
+Each call to `OnUpdate` submits two separate `Renderer2D` scenes in sequence:
+
+<Steps>
+  <Step title="Static and rotating quads">
+    Five quads are drawn: a 45°-rotated fixed quad, a plain colored quad, a color-adjustable quad (driven by `m_SquareColor`), a large tiled checkerboard background, and a checkerboard quad that rotates continuously over time.
+
+    ```cpp Sandbox2D.cpp — first scene
+    static float rotation = 0.0f;
+    rotation += ts * 50.0f;
+
+    Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+    Beetle::Renderer2D::DrawRotatedQuad({ 1.0f, 0.0f }, { 0.8f, 0.8f }, 45.0f, { 0.8f, 0.2f, 0.3f, 1.0f });
+    Beetle::Renderer2D::DrawQuad({ -1.0f, 0.0f }, { 0.8f, 0.8f }, { 0.8f, 0.2f, 0.3f, 1.0f });
+    Beetle::Renderer2D::DrawQuad({ 0.5f, -0.5f }, { 0.5f, 0.75f }, m_SquareColor);
+    Beetle::Renderer2D::DrawQuad({ 0.0f, 0.0f, -0.1f }, { 20.0f, 20.0f }, m_CheckerBoard, 10.f);
+    Beetle::Renderer2D::DrawRotatedQuad({ -2.0f, 0.0f, 0.0f }, { 1.0f, 1.0f }, rotation, m_CheckerBoard, 20.f);
+    Beetle::Renderer2D::EndScene();
+    ```
+  </Step>
+  <Step title="Color grid stress test">
+    A 20×20 grid of small quads (400 total) is drawn using a nested loop. Each quad's color is derived from its grid position, making this a convenient batch-renderer throughput test.
+
+    ```cpp Sandbox2D.cpp — color grid
+    Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+
+    const float step = 0.5f;
+    const float quadSize = 0.45f;
+
+    for (float y = -5.0f; y < 5.0f; y += step)
+    {
+        for (float x = -5.0f; x < 5.0f; x += step)
+        {
+            glm::vec4 color = { (x + 5.0f) / 10.0f, 0.4f, (y + 5.0f) / 10.0f, 0.7f };
+            Beetle::Renderer2D::DrawQuad({ x, y }, { quadSize, quadSize }, color);
+        }
+    }
+    Beetle::Renderer2D::EndScene();
+    ```
+  </Step>
+</Steps>
+
+### ImGui stats overlay
+
+`OnImGuiRender` opens a **Settings** panel that displays per-frame timing, draw call count, quad count, vertex count, and index count, plus a color picker for `m_SquareColor`.
+
+```cpp Sandbox2D.cpp — OnImGuiRender
+ImGui::Begin("Settings");
+
+auto stats = Beetle::Renderer2D::GetStats();
+ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
+    1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+ImGui::Text("Renderer2D Stats:");
+ImGui::Text("Draw Calls: %d", stats.DrawCalls);
+ImGui::Text("Quads: %d", stats.QuadCount);
+ImGui::Text("Vertices: %d", stats.GetTotalVertexCount());
+ImGui::Text("Indices: %d", stats.GetTotalIndexCount());
+
+ImGui::ColorEdit4("Square Color", glm::value_ptr(m_SquareColor));
+ImGui::End();
+```
+
+## ExampleLayer: lower-level rendering
+
+`ExampleLayer` is the older, lower-level counterpart to `Sandbox2D`. It uses the non-batched `Beetle::Renderer` API directly and demonstrates manual vertex buffer construction, shader authorship, and texture binding. It is commented out in `SandboxApp.cpp` but remains available.
+
+<CodeGroup>
+
+```cpp ExampleLayer.h
+class ExampleLayer : public Beetle::Layer
+{
+public:
+    ExampleLayer();
+    virtual ~ExampleLayer() = default;
+
+    void OnAttach() override;
+    void OnDetach() override;
+    void OnUpdate(Beetle::TimeStamp ts) override;
+    virtual void OnImGuiRender() override;
+    void OnEvent(Beetle::Event& event) override;
+
+private:
+    Beetle::ShaderLibrary m_ShaderLibrary;
+    Beetle::Ref<Beetle::Shader> m_Shader;
+    Beetle::Ref<Beetle::VertexArray> m_VertexArray;
+
+    Beetle::Ref<Beetle::Shader> m_flatColorShader;
+    Beetle::Ref<Beetle::VertexArray> m_SquareVA;
+
+    Beetle::Ref<Beetle::Texture2D> m_Texture, m_BeetleLogo;
+
+    Beetle::OrthographicCameraController m_CameraController;
+
+    glm::vec3 m_SquareColor = { 0.2f, 0.3f, 0.8f };
+};
+```
+
+```cpp ExampleLayer — OnUpdate excerpt
+Beetle::Renderer::BeginScene(m_CameraController.GetCamera());
+
+glm::mat4 scale = glm::scale(glm::mat4(1.0f), glm::vec3(0.1f));
+m_flatColorShader->Bind();
+m_flatColorShader->SetFloat3("u_Color", m_SquareColor);
+
+for (int i = 0; i < 20; i++)
+    for (int j = 0; j < 20; j++)
+    {
+        glm::vec3 pos(i * 0.11f, j * 0.11f, 0.0f);
+        glm::mat4 transform = glm::translate(glm::mat4(1.0f), pos) * scale;
+        Beetle::Renderer::Submit(m_flatColorShader, m_SquareVA, transform);
+    }
+
+Beetle::Renderer::EndScene();
+```
+
+</CodeGroup>
+
+## Adding your own layer
+
+To prototype a new feature, write a layer, push it in `SandboxApp.cpp`, and run the Sandbox project.
+
+<Steps>
+  <Step title="Create your layer class">
+    ```cpp MyTestLayer.h
+    #pragma once
+    #include "Beetle.h"
+
+    class MyTestLayer : public Beetle::Layer
+    {
+    public:
+        MyTestLayer() : Beetle::Layer("MyTest") {}
+        void OnAttach() override {}
+        void OnDetach() override {}
+        void OnUpdate(Beetle::TimeStamp ts) override;
+        void OnImGuiRender() override;
+        void OnEvent(Beetle::Event& e) override {}
+    };
+    ```
+  </Step>
+  <Step title="Implement your layer logic">
+    ```cpp MyTestLayer.cpp
+    #include "MyTestLayer.h"
+    #include "imgui/imgui.h"
+
+    void MyTestLayer::OnUpdate(Beetle::TimeStamp ts)
+    {
+        Beetle::RendererCommand::SetClearColor({ 0.15f, 0.15f, 0.15f, 1.0f });
+        Beetle::RendererCommand::Clear();
+        // your draw calls here
+    }
+
+    void MyTestLayer::OnImGuiRender()
+    {
+        ImGui::Begin("My Test Layer");
+        ImGui::Text("Hello from MyTestLayer!");
+        ImGui::End();
+    }
+    ```
+  </Step>
+  <Step title="Push it in SandboxApp.cpp">
+    ```cpp SandboxApp.cpp
+    #include "MyTestLayer.h"
+
+    class Sandbox : public Beetle::Application
+    {
+    public:
+        Sandbox()
+        {
+            PushLayer(new MyTestLayer());
+        }
+    };
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+Use Sandbox as your primary prototyping environment. It has no editor overhead, so the full frame time is available to your layer. Once your feature is working, move the layer code into the Stag project or extract it into the engine itself.
+</Tip>

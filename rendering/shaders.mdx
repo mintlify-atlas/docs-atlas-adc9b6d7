@@ -1,0 +1,198 @@
+---
+title: "GLSL shaders and the ShaderLibrary in Beetle"
+description: "Load GLSL shader files or inline source strings, upload typed uniforms through a clean API, and manage named shaders with ShaderLibrary for quick lookup."
+---
+
+Beetle wraps OpenGL shader programs behind the abstract `Shader` class. You load or create shaders through static factory methods and interact with them through a uniform API — setting integers, floats, vectors, and matrices — without ever calling OpenGL directly. The companion `ShaderLibrary` class gives you a named registry so you can retrieve shaders by string key anywhere in your code.
+
+## The `Shader` interface
+
+Every shader exposes the following methods:
+
+| Method | Description |
+|---|---|
+| `Bind() const` | Binds the shader program for subsequent draw calls. |
+| `Unbind() const` | Unbinds the shader program (sets the active program to 0). |
+| `SetInt(name, value)` | Uploads a single `int` uniform. |
+| `SetIntArray(name, values, count)` | Uploads an array of `int` uniforms (e.g. texture sampler slots). |
+| `SetFloat(name, value)` | Uploads a single `float` uniform. |
+| `SetFloat3(name, vec3)` | Uploads a `vec3` uniform. |
+| `SetFloat4(name, vec4)` | Uploads a `vec4` uniform. |
+| `SetMat4(name, mat4)` | Uploads a `mat4` uniform. |
+| `GetName() const` | Returns the shader's logical name (derived from the filename when loading from disk). |
+
+## Creating shaders
+
+`Shader::Create` is a factory method that selects the correct backend (currently always `OpenGLShader`) and returns a `Ref<Shader>`.
+
+### From a `.glsl` file
+
+Pass a filepath to a single `.glsl` file that contains both the vertex and fragment shader stages, separated by `#type vertex` and `#type fragment` directives. The shader's logical name is extracted automatically from the filename (without extension).
+
+```cpp
+Ref<Shader> shader = Shader::Create("assets/shaders/Texture.glsl");
+// shader->GetName() == "Texture"
+```
+
+### From inline source strings
+
+Pass an explicit name plus the vertex and fragment GLSL source as `std::string` values. This is useful for procedurally generated shaders or embedding small shaders in code.
+
+```cpp
+std::string vertSrc = R"(
+    #version 460 core
+    layout(location = 0) in vec3 a_Position;
+    uniform mat4 u_ViewProjection;
+    void main() {
+        gl_Position = u_ViewProjection * vec4(a_Position, 1.0);
+    }
+)";
+
+std::string fragSrc = R"(
+    #version 460 core
+    layout(location = 0) out vec4 color;
+    uniform vec4 u_Color;
+    void main() { color = u_Color; }
+)";
+
+Ref<Shader> shader = Shader::Create("FlatColor", vertSrc, fragSrc);
+```
+
+## GLSL file format
+
+Beetle uses a `#type` preprocessor directive to split a single file into multiple stages. The parser looks for `#type vertex` and `#type fragment` (or `#type pixel`) tokens and splits the source at those boundaries. Each stage is compiled independently and linked into one program.
+
+```glsl
+#type vertex
+#version 460 core
+
+layout(location = 0) in vec3 a_Position;
+
+uniform mat4 u_ViewProjection;
+uniform mat4 u_Transform;
+
+void main()
+{
+    gl_Position = u_ViewProjection * u_Transform * vec4(a_Position, 1.0);
+}
+
+#type fragment
+#version 460 core
+
+layout(location = 0) out vec4 color;
+
+uniform vec4 u_Color;
+
+void main()
+{
+    color = u_Color;
+}
+```
+
+The built-in `Texture.glsl` shader (used by `Renderer2D`) accepts all five per-vertex attributes written by the batch system and samples from a `sampler2D` array of 32 texture units:
+
+```glsl
+#type vertex
+#version 460 core
+
+layout(location = 0) in vec3  a_Position;
+layout(location = 1) in vec4  a_Color;
+layout(location = 2) in vec2  a_TexCoord;
+layout(location = 3) in float a_TexIndex;
+layout(location = 4) in float a_TilingFactor;
+
+uniform mat4 u_ViewProjection;
+
+out vec4  v_Color;
+out vec2  v_TexCoord;
+out float v_TexIndex;
+out float v_TilingFactor;
+
+void main()
+{
+    v_Color       = a_Color;
+    v_TexCoord    = a_TexCoord;
+    v_TexIndex    = a_TexIndex;
+    v_TilingFactor = a_TilingFactor;
+    gl_Position   = u_ViewProjection * vec4(a_Position, 1.0);
+}
+
+#type fragment
+#version 460 core
+
+layout(location = 0) out vec4 color;
+
+in vec4  v_Color;
+in vec2  v_TexCoord;
+in float v_TexIndex;
+in float v_TilingFactor;
+
+uniform sampler2D u_Textures[32];
+
+void main()
+{
+    vec4 texColor = v_Color;
+    switch (int(v_TexIndex))
+    {
+        case  0: texColor *= texture(u_Textures[0],  v_TexCoord * v_TilingFactor); break;
+        case  1: texColor *= texture(u_Textures[1],  v_TexCoord * v_TilingFactor); break;
+        // ... cases 2–31 follow the same pattern
+    }
+    color = texColor;
+}
+```
+
+## Uploading uniforms
+
+After creating a shader, bind it and call the typed `Set*` methods. You do not need to query uniform locations yourself.
+
+```cpp
+auto shader = Shader::Create("assets/shaders/FlatColor.glsl");
+
+shader->Bind();
+shader->SetMat4("u_ViewProjection", camera.GetViewProjectionMatrix());
+shader->SetMat4("u_Transform", transform);
+shader->SetFloat4("u_Color", { 0.2f, 0.3f, 0.8f, 1.0f });
+```
+
+## `ShaderLibrary`
+
+`ShaderLibrary` is an `std::unordered_map<std::string, Ref<Shader>>` wrapper that prevents duplicate loads and gives you named access to shaders anywhere.
+
+### Adding shaders
+
+```cpp
+ShaderLibrary m_ShaderLibrary;
+
+// Auto-name from GetName()
+m_ShaderLibrary.Add(Shader::Create("assets/shaders/Texture.glsl"));
+
+// Explicit name
+m_ShaderLibrary.Add("MyShader", Shader::Create("assets/shaders/FlatColor.glsl"));
+```
+
+### Loading directly into the library
+
+`Load` creates the shader and adds it to the library in one call:
+
+```cpp
+// Name derived from file ("FlatColor")
+auto shader = m_ShaderLibrary.Load("assets/shaders/FlatColor.glsl");
+
+// Explicit name
+auto shader = m_ShaderLibrary.Load("Flat", "assets/shaders/FlatColor.glsl");
+```
+
+### Retrieving and checking
+
+```cpp
+if (m_ShaderLibrary.Exists("Texture"))
+{
+    auto shader = m_ShaderLibrary.Get("Texture");
+    shader->Bind();
+}
+```
+
+<Note>
+  All shader source must be valid GLSL targeted at OpenGL 4.6 core profile. Beetle currently has no Vulkan, Metal, or HLSL backend, so GLSL is the only supported shading language.
+</Note>

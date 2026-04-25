@@ -1,0 +1,99 @@
+{
+  "projectType": "framework",
+  "projectName": "Beetle Engine",
+  "projectDescription": "A modern C++ game engine built from scratch with a focus on understanding engine architecture through clean, educational implementation.",
+  "theme": "aspen",
+  "primaryColor": "#2D6A4F",
+  "lightColor": "#52B788",
+  "darkColor": "#1B4332",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "project-structure"
+            ]
+          },
+          {
+            "group": "Core Systems",
+            "pages": [
+              "core/application",
+              "core/layer-system",
+              "core/logging",
+              "core/events"
+            ]
+          },
+          {
+            "group": "Rendering",
+            "pages": [
+              "rendering/overview",
+              "rendering/renderer2d",
+              "rendering/shaders",
+              "rendering/textures",
+              "rendering/camera"
+            ]
+          },
+          {
+            "group": "Scene & ECS",
+            "pages": [
+              "scene/overview",
+              "scene/entities",
+              "scene/components"
+            ]
+          },
+          {
+            "group": "Editor & Sandbox",
+            "pages": [
+              "editor/stag-editor",
+              "editor/sandbox"
+            ]
+          },
+          {
+            "group": "Build & Configuration",
+            "pages": [
+              "build/setup",
+              "build/premake",
+              "build/contributing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Layer-stack architecture for composable update and event processing",
+    "Flexible event system with type identification and category bitmask filtering",
+    "2D batch renderer using OpenGL with quad drawing and texture support",
+    "Entity Component System (ECS) backed by the entt library",
+    "Structured logging with spdlog for core and client loggers",
+    "ImGui integration for real-time debugging overlays",
+    "Orthographic camera with controller abstraction",
+    "Multi-project build setup using Premake5",
+    "Stag editor application built on the engine layer system",
+    "Precompiled header support and clean include structure"
+  ],
+  "publicApiSurface": [
+    "Beetle::Application",
+    "Beetle::Layer",
+    "Beetle::LayerStack",
+    "Beetle::Event / Beetle::EventDispatcher",
+    "Beetle::Renderer2D::DrawQuad",
+    "Beetle::Renderer2D::DrawRotatedQuad",
+    "Beetle::Shader / Beetle::ShaderLibrary",
+    "Beetle::Texture2D",
+    "Beetle::FrameBuffer",
+    "Beetle::VertexArray / Beetle::Buffer",
+    "Beetle::OrthographicCamera / Beetle::OrthographicCameraController",
+    "Beetle::Scene",
+    "Beetle::Entity",
+    "Beetle::TagComponent / Beetle::TransformComponent / Beetle::SpriteRendererComponent",
+    "Beetle::Log (BT_CORE_* / BT_* macros)",
+    "Beetle::Ref<T> / Beetle::Scope<T>",
+    "Beetle::CreateApplication() (client entry point)"
+  ]
+}

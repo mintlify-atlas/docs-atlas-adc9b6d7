@@ -1,0 +1,260 @@
+---
+title: "Built-in ECS components reference in Beetle Engine"
+description: "Reference for TagComponent, TransformComponent, and SpriteRendererComponent — the three built-in structs every Beetle entity can carry — plus guidance on custom components."
+---
+
+Components in Beetle are plain C++ structs with no required base class. They carry data and nothing else; behaviour comes from systems such as `Scene::OnUpdate` that iterate over entities sharing a particular combination of components. Beetle ships three built-in components that cover identity, spatial placement, and 2-D rendering. Every component is defined in `Beetle/Scene/Components.h`.
+
+## Quick start: adding all three components to an entity
+
+```cpp
+Ref<Scene> scene = CreateRef<Scene>();
+
+// CreateEntity automatically adds TagComponent and TransformComponent
+Entity entity = scene->CreateEntity("Crate");
+
+// Set a non-default position by mutating the TransformComponent
+entity.GetComponent<TransformComponent>().Transform =
+    glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.5f, 0.0f));
+
+// Add a sprite with an orange tint
+entity.AddComponent<SpriteRendererComponent>(glm::vec4{ 1.0f, 0.5f, 0.0f, 1.0f });
+```
+
+Once `SpriteRendererComponent` is present, `Scene::OnUpdate` picks up the entity automatically and passes its transform matrix and colour to `Renderer2D::DrawQuad`.
+
+---
+
+## Built-in component reference
+
+<AccordionGroup>
+  <Accordion title="TagComponent — entity name">
+    `TagComponent` stores a human-readable name for the entity. `Scene::CreateEntity` attaches one automatically and sets `Tag` to the name you pass (or `"Entity"` if the string is empty).
+
+    ### Definition
+
+    ```cpp
+    struct TagComponent
+    {
+        std::string Tag;
+
+        TagComponent() = default;
+        TagComponent(const TagComponent&) = default;
+        TagComponent(const std::string& tag) : Tag(tag) {}
+    };
+    ```
+
+    ### Fields
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `Tag` | `std::string` | `""` | The display name of the entity. |
+
+    ### Constructors
+
+    | Signature | Description |
+    |---|---|
+    | `TagComponent()` | Default-constructs with an empty string. |
+    | `TagComponent(const TagComponent&)` | Copy constructor. |
+    | `TagComponent(const std::string& tag)` | Initialises `Tag` with `tag`. |
+
+    ### Usage
+
+    ```cpp
+    // Read the tag (e.g. for an editor UI label)
+    auto& tag = entity.GetComponent<TagComponent>().Tag;
+    ImGui::Text("%s", tag.c_str());
+
+    // Rename the entity at runtime
+    entity.GetComponent<TagComponent>().Tag = "Boss";
+    ```
+
+    <Note>
+      You never need to call `AddComponent<TagComponent>` yourself — `Scene::CreateEntity` always attaches one and sets its value from the `name` argument.
+    </Note>
+  </Accordion>
+
+  <Accordion title="TransformComponent — world-space matrix">
+    `TransformComponent` holds a single `glm::mat4` that represents the entity's position, rotation, and scale in world space. It is initialised to the identity matrix (`glm::mat4(1.0f)`) by default. `Scene::CreateEntity` attaches one to every new entity.
+
+    ### Definition
+
+    ```cpp
+    struct TransformComponent
+    {
+        glm::mat4 Transform{ 1.0f };
+
+        TransformComponent() = default;
+        TransformComponent(const TransformComponent&) = default;
+        TransformComponent(const glm::mat4& transform) : Transform(transform) {}
+
+        operator glm::mat4& ()             { return Transform; }
+        operator const glm::mat4& () const { return Transform; }
+    };
+    ```
+
+    ### Fields
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `Transform` | `glm::mat4` | Identity | The full model-to-world transform matrix. |
+
+    ### Constructors
+
+    | Signature | Description |
+    |---|---|
+    | `TransformComponent()` | Identity matrix. |
+    | `TransformComponent(const TransformComponent&)` | Copy constructor. |
+    | `TransformComponent(const glm::mat4& transform)` | Initialises `Transform` with the provided matrix. |
+
+    ### Implicit conversion operators
+
+    `TransformComponent` converts implicitly to `glm::mat4&` and `const glm::mat4&`. This means you can pass the component directly anywhere a matrix reference is expected — including `Renderer2D::DrawQuad`:
+
+    ```cpp
+    // Scene::OnUpdate uses the implicit conversion here:
+    Renderer2D::DrawQuad(transform, sprite.Color);
+    //                   ^^^^^^^^^ TransformComponent& converts to const glm::mat4&
+    ```
+
+    ### Usage
+
+    ```cpp
+    // Translate an entity to world position (3, 0, 0)
+    auto& tc = entity.GetComponent<TransformComponent>();
+    tc.Transform = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 0.0f, 0.0f));
+
+    // Scale and rotate
+    tc.Transform = glm::scale(tc.Transform, glm::vec3(2.0f));
+    tc.Transform = glm::rotate(tc.Transform, glm::radians(45.0f), glm::vec3(0, 0, 1));
+    ```
+
+    <Tip>
+      Build your matrix with `glm::translate`, `glm::rotate`, and `glm::scale` in that order (TRS) to get the standard model transform behaviour: translate first, then rotate around the local origin, then scale.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="SpriteRendererComponent — 2-D quad colour">
+    `SpriteRendererComponent` carries a single RGBA colour used when rendering the entity as a 2-D quad. Unlike `TagComponent` and `TransformComponent`, this component is **not** added automatically — you opt individual entities into 2-D rendering by attaching it yourself.
+
+    ### Definition
+
+    ```cpp
+    struct SpriteRendererComponent
+    {
+        glm::vec4 Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+
+        SpriteRendererComponent() = default;
+        SpriteRendererComponent(const SpriteRendererComponent&) = default;
+        SpriteRendererComponent(const glm::vec4& color) : Color(color) {}
+    };
+    ```
+
+    ### Fields
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `Color` | `glm::vec4` | `{1, 1, 1, 1}` | RGBA colour in linear space. Alpha `1.0` is fully opaque. |
+
+    ### Constructors
+
+    | Signature | Description |
+    |---|---|
+    | `SpriteRendererComponent()` | White, fully opaque. |
+    | `SpriteRendererComponent(const SpriteRendererComponent&)` | Copy constructor. |
+    | `SpriteRendererComponent(const glm::vec4& color)` | Initialises `Color` with the provided RGBA value. |
+
+    ### How it drives rendering
+
+    `Scene::OnUpdate` groups every entity that has both `TransformComponent` and `SpriteRendererComponent` and calls:
+
+    ```cpp
+    Renderer2D::DrawQuad(transform, sprite.Color);
+    ```
+
+    `transform` is the `TransformComponent` (which converts implicitly to `const glm::mat4&`) and `sprite.Color` is the `glm::vec4`. Entities without a `SpriteRendererComponent` are ignored by this pass entirely.
+
+    ### Usage
+
+    ```cpp
+    // Spawn a semi-transparent red quad
+    Entity fx = scene->CreateEntity("RedFlash");
+    fx.AddComponent<SpriteRendererComponent>(glm::vec4{ 1.0f, 0.0f, 0.0f, 0.5f });
+
+    // Tint it green at runtime (e.g. on player heal)
+    fx.GetComponent<SpriteRendererComponent>().Color = glm::vec4{ 0.0f, 1.0f, 0.0f, 1.0f };
+    ```
+
+    The Stag editor exposes this colour through an ImGui colour picker:
+
+    ```cpp
+    auto& squareColor = m_SquareEntity.GetComponent<SpriteRendererComponent>().Color;
+    ImGui::ColorEdit4("Square Color", glm::value_ptr(squareColor));
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## How rendering uses components together
+
+`Scene::OnUpdate` combines `TransformComponent` and `SpriteRendererComponent` in a single entt group query to minimise cache misses:
+
+```cpp
+void Scene::OnUpdate(TimeStamp ts)
+{
+    auto group = m_Registry.group<TransformComponent>(entt::get<SpriteRendererComponent>);
+    for (auto entity : group)
+    {
+        auto& [transform, sprite] = group.get<TransformComponent, SpriteRendererComponent>(entity);
+        Renderer2D::DrawQuad(transform, sprite.Color);
+    }
+}
+```
+
+Only entities that have **both** components are submitted for drawing. An entity with only a `TransformComponent` — such as a logical trigger volume — is never passed to the renderer.
+
+---
+
+## Creating custom components
+
+Any plain struct can be a component. There is no base class to inherit and no registration macro required.
+
+```cpp
+// Define anywhere — a header your scene code can see
+struct HealthComponent
+{
+    float Max     = 100.0f;
+    float Current = 100.0f;
+
+    bool IsAlive() const { return Current > 0.0f; }
+};
+
+struct VelocityComponent
+{
+    glm::vec2 Linear{ 0.0f };
+    float     Angular = 0.0f;
+};
+```
+
+Attach them exactly like the built-in components:
+
+```cpp
+Entity enemy = scene->CreateEntity("Goblin");
+enemy.AddComponent<HealthComponent>();                           // default values
+enemy.AddComponent<VelocityComponent>(glm::vec2{ -1.0f, 0.0f }, 0.0f);
+```
+
+Read them back the same way:
+
+```cpp
+auto& health = enemy.GetComponent<HealthComponent>();
+health.Current -= 25.0f;
+
+if (!health.IsAlive())
+    enemy.RemoveComponent<SpriteRendererComponent>(); // hide the sprite
+```
+
+<Tip>
+  Keep component structs as plain data. If you find yourself adding virtual methods or complex logic, that behaviour belongs in a system function instead, following the ECS principle of separating data from behaviour.
+</Tip>

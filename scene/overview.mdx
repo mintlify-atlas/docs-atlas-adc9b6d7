@@ -1,0 +1,89 @@
+---
+title: "Scene and ECS management in Beetle Engine"
+description: "Learn how the Scene class uses an entt registry to manage entities and components, and how the Scene–Entity–Component hierarchy structures your game world."
+---
+
+The `Scene` class is the root container for everything in a Beetle game world. It owns an `entt::registry` — the data store that maps entities to their components — and provides the two operations you need most: creating entities and advancing the world each frame. Everything that exists in a running Beetle application lives inside a `Scene`, and the Stag editor holds a live `Scene` to manage all editor-visible objects.
+
+## The Entity Component System pattern
+
+Beetle uses the [EnTT](https://github.com/skypjack/entt) library to implement an Entity Component System (ECS). In an ECS:
+
+- **Entities** are lightweight identifiers — integers that act as keys into the registry.
+- **Components** are plain data structs attached to those keys.
+- **Systems** are functions that iterate over entities sharing a specific set of components and act on their data.
+
+This approach keeps data tightly packed in memory, makes it easy to add or remove behaviour without subclassing, and scales well as the number of entity types grows.
+
+## How Scene, Entity, and components relate
+
+```
+Scene
+ └─ entt::registry          (owns all entity/component storage)
+      └─ Entity              (a typed handle into the registry)
+           ├─ TagComponent
+           ├─ TransformComponent
+           └─ SpriteRendererComponent  (optional, per entity)
+```
+
+`Scene::CreateEntity` allocates a new entt entity, attaches a `TransformComponent` and a `TagComponent` automatically, and wraps the raw handle in a `Beetle::Entity` value that you hold onto in user code. You then call `AddComponent<T>` on that entity to attach further components.
+
+`Scene::OnUpdate` drives the render loop: it groups every entity that has both a `TransformComponent` and a `SpriteRendererComponent`, and calls `Renderer2D::DrawQuad` for each one.
+
+<CardGroup cols={3}>
+  <Card title="Scene" icon="film">
+    Owns the `entt::registry`. Call `CreateEntity(name)` to spawn actors and `OnUpdate(ts)` each frame to render them.
+  </Card>
+  <Card title="Entity" icon="cube">
+    A thin handle (`entt::entity` + `Scene*`). Use `AddComponent`, `GetComponent`, `HasComponent`, and `RemoveComponent` to manage attached data.
+  </Card>
+  <Card title="Components" icon="puzzle">
+    Plain C++ structs stored in the registry. Built-in types include `TagComponent`, `TransformComponent`, and `SpriteRendererComponent`. Add your own with no base class required.
+  </Card>
+</CardGroup>
+
+## The Scene class interface
+
+```cpp
+namespace Beetle {
+
+    class Scene {
+    public:
+        Scene();
+        ~Scene();
+
+        Entity CreateEntity(const std::string& name = std::string());
+        void   OnUpdate(TimeStamp ts);
+
+    private:
+        entt::registry m_Registry;
+        friend class Entity;
+    };
+}
+```
+
+| Method | Description |
+|---|---|
+| `CreateEntity(name)` | Creates an entity with a `TagComponent` (using `name`, or `"Entity"` if empty) and a default `TransformComponent`. Returns the new `Entity`. |
+| `OnUpdate(ts)` | Iterates all entities with both `TransformComponent` and `SpriteRendererComponent` and submits them to `Renderer2D::DrawQuad`. |
+
+<Note>
+  `Scene` grants `Entity` friendship so that `Entity`'s template methods can reach `m_Registry` directly. You should not access `m_Registry` from anywhere else in your code.
+</Note>
+
+## How Stag uses Scene
+
+The Stag editor stores a `Ref<Scene>` called `m_ActiveScene`. During `OnAttach` it creates a scene, spawns an entity, and attaches a `SpriteRendererComponent`:
+
+```cpp
+m_ActiveScene = CreateRef<Scene>();
+
+auto square = m_ActiveScene->CreateEntity("Square");
+square.AddComponent<SpriteRendererComponent>(glm::vec4{ 0.0f, 1.0f, 0.0f, 1.0f });
+```
+
+Each frame, `EditorLayer::OnUpdate` calls `m_ActiveScene->OnUpdate(ts)` between `Renderer2D::BeginScene` and `Renderer2D::EndScene` so that all scene entities are drawn into the editor viewport.
+
+<Tip>
+  You can hold the returned `Entity` value across frames — as shown by `m_SquareEntity` in `EditorLayer` — and read or mutate its components at any time via `GetComponent<T>`.
+</Tip>

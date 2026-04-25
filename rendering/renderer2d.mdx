@@ -1,0 +1,228 @@
+---
+title: "Beetle Engine 2D batch rendering with Renderer2D"
+description: "Renderer2D collects quads, textured quads, and rotated quads into a single batched draw call per scene, tracking draw call and quad statistics per frame."
+---
+
+`Renderer2D` is Beetle's primary rendering surface for 2D scenes. Rather than issuing one GPU draw call per quad, it accumulates up to 20 000 quads into a single dynamic vertex buffer and flushes them all at once when you call `EndScene` — or automatically mid-scene if the buffer fills up. All methods are static, so you never need to create an instance.
+
+## Lifecycle
+
+### `Init()` and `Shutdown()`
+
+Call `Renderer2D::Init()` once during application startup (typically inside your layer's `OnAttach`). It allocates the quad vertex buffer, builds the index buffer, creates an internal 1×1 white texture for solid-color quads, and loads the built-in texture shader. Call `Renderer2D::Shutdown()` on application exit to free the heap-allocated vertex staging buffer.
+
+```cpp
+// In your Application constructor or layer OnAttach
+Beetle::Renderer2D::Init();
+
+// In your Application destructor or layer OnDetach
+Beetle::Renderer2D::Shutdown();
+```
+
+### `BeginScene` and `EndScene`
+
+Wrap all draw calls for a single frame (or a single camera view) in a `BeginScene` / `EndScene` pair. `BeginScene` binds the texture shader and uploads the camera's view-projection matrix. `EndScene` uploads the accumulated vertex data to the GPU and issues the indexed draw call via `RendererCommand::DrawIndexed`.
+
+```cpp
+Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+
+// ... draw calls go here ...
+
+Beetle::Renderer2D::EndScene();
+```
+
+You can open multiple `BeginScene` / `EndScene` pairs within a single frame — for example, to render with different cameras or to separate foreground and background passes, as shown in `Sandbox2D::OnUpdate`.
+
+### `Flush()`
+
+Submits the current contents of the vertex buffer to the GPU without resetting scene state. You rarely need to call this directly — `EndScene` calls it for you. The renderer also calls an internal `FlushAndReset` automatically when the batch is full (at 20 000 quads or 32 texture slots).
+
+## Drawing quads
+
+All `DrawQuad` overloads write four vertices into the shared buffer using the transform derived from position and size, or from an explicit `glm::mat4`.
+
+### Solid color
+
+```cpp
+// 2D position (z = 0)
+Beetle::Renderer2D::DrawQuad({ -1.0f, 0.0f }, { 0.8f, 0.8f }, { 0.8f, 0.2f, 0.3f, 1.0f });
+
+// 3D position (explicit z for layering)
+Beetle::Renderer2D::DrawQuad({ 0.0f, 0.0f, -0.1f }, { 20.0f, 20.0f }, { 1.0f, 1.0f, 1.0f, 1.0f });
+
+// Pre-computed transform matrix
+glm::mat4 transform = glm::translate(glm::mat4(1.0f), position)
+    * glm::scale(glm::mat4(1.0f), { size.x, size.y, 1.0f });
+Beetle::Renderer2D::DrawQuad(transform, color);
+```
+
+### Textured
+
+The textured overloads accept an optional `tilingFactor` and `tintColor`.
+
+- **`tilingFactor`** — multiplies the UV coordinates before sampling. A value of `10.0f` tiles the texture 10 times across the quad. Defaults to `1.0f`.
+- **`tintColor`** — multiplied against the sampled texel color. Defaults to `{1, 1, 1, 1}` (no tint). Use this to colorize or fade a texture without a separate shader.
+
+```cpp
+Ref<Texture2D> checkerboard = Texture2D::Create("assets/textures/checkerboard.png");
+
+// Tile the texture 10× over a large background quad
+Beetle::Renderer2D::DrawQuad(
+    { 0.0f, 0.0f, -0.1f },   // position
+    { 20.0f, 20.0f },        // size
+    checkerboard,
+    10.0f                    // tilingFactor
+);
+
+// Tinted textured quad (red tint, half opacity)
+Beetle::Renderer2D::DrawQuad(
+    { 0.5f, -0.5f },
+    { 1.0f, 1.0f },
+    checkerboard,
+    1.0f,                            // tilingFactor
+    { 1.0f, 0.3f, 0.3f, 0.5f }      // tintColor
+);
+```
+
+## Drawing rotated quads
+
+`DrawRotatedQuad` accepts the same parameters as `DrawQuad` plus a `rotation` angle **in degrees**. The renderer converts to radians internally via `glm::radians()` before calling `glm::rotate`. The rotation is applied around the Z-axis (counter-clockwise), with scale applied after rotation so the quad scales in its own local space.
+
+```cpp
+// Static 45-degree rotation
+Beetle::Renderer2D::DrawRotatedQuad(
+    { 1.0f, 0.0f },  // position
+    { 0.8f, 0.8f },  // size
+    45.0f,           // rotation in degrees
+    { 0.8f, 0.2f, 0.3f, 1.0f }
+);
+
+// Animated rotation using a texture
+static float rotation = 0.0f;
+rotation += ts * 50.0f; // degrees per second
+
+Beetle::Renderer2D::DrawRotatedQuad(
+    { -2.0f, 0.0f, 0.0f },
+    { 1.0f, 1.0f },
+    rotation,        // degrees per second, accumulated
+    checkerboard,
+    20.0f
+);
+```
+
+## Method reference
+
+<Accordion title="DrawQuad overloads">
+
+| Signature | Description |
+|---|---|
+| `DrawQuad(vec2 pos, vec2 size, vec4 color)` | Solid-color quad at a 2D position (z = 0). |
+| `DrawQuad(vec3 pos, vec2 size, vec4 color)` | Solid-color quad at an explicit 3D position. |
+| `DrawQuad(vec2 pos, vec2 size, Texture2D, tilingFactor, tintColor)` | Textured quad at 2D position. |
+| `DrawQuad(vec3 pos, vec2 size, Texture2D, tilingFactor, tintColor)` | Textured quad at 3D position. |
+| `DrawQuad(mat4 transform, vec4 color)` | Solid-color quad with a pre-built transform. |
+| `DrawQuad(mat4 transform, Texture2D, tilingFactor, tintColor)` | Textured quad with a pre-built transform. |
+
+</Accordion>
+
+<Accordion title="DrawRotatedQuad overloads">
+
+| Signature | Description |
+|---|---|
+| `DrawRotatedQuad(vec2 pos, vec2 size, float rotation, vec4 color)` | Rotated solid-color quad at 2D position. |
+| `DrawRotatedQuad(vec3 pos, vec2 size, float rotation, vec4 color)` | Rotated solid-color quad at 3D position. |
+| `DrawRotatedQuad(vec2 pos, vec2 size, float rotation, Texture2D, tilingFactor, tintColor)` | Rotated textured quad at 2D position. |
+| `DrawRotatedQuad(vec3 pos, vec2 size, float rotation, Texture2D, tilingFactor, tintColor)` | Rotated textured quad at 3D position. |
+
+</Accordion>
+
+## Statistics
+
+`Renderer2D` exposes a `Statistics` struct you can read every frame to measure batch efficiency.
+
+```cpp
+struct Statistics {
+    uint32_t DrawCalls;   // number of GPU draw calls issued this scene
+    uint32_t QuadCount;   // total quads submitted
+
+    uint32_t GetTotalVertexCount(); // QuadCount * 4
+    uint32_t GetTotalIndexCount();  // QuadCount * 6
+};
+```
+
+Call `ResetStats()` at the start of each frame before any draw calls, then read `GetStats()` at the end (e.g., in `OnImGuiRender`):
+
+```cpp
+void Sandbox2D::OnUpdate(Beetle::TimeStamp ts)
+{
+    Beetle::Renderer2D::ResetStats();
+    // ... draw calls ...
+}
+
+void Sandbox2D::OnImGuiRender()
+{
+    auto stats = Beetle::Renderer2D::GetStats();
+    ImGui::Text("Draw Calls: %d", stats.DrawCalls);
+    ImGui::Text("Quads:      %d", stats.QuadCount);
+    ImGui::Text("Vertices:   %d", stats.GetTotalVertexCount());
+    ImGui::Text("Indices:    %d", stats.GetTotalIndexCount());
+}
+```
+
+<Tip>
+  Call `ResetStats()` at the very start of `OnUpdate`, before any draw calls, so the counters reflect exactly one frame. If you reset them after `EndScene` you may miss draw calls issued by other layers.
+</Tip>
+
+## Complete draw loop example
+
+The following is taken directly from `Sandbox2D::OnUpdate` and shows a realistic frame:
+
+```cpp
+void Sandbox2D::OnUpdate(Beetle::TimeStamp ts)
+{
+    // Reset per-frame statistics
+    Beetle::Renderer2D::ResetStats();
+
+    // Clear the back buffer
+    Beetle::RendererCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+    Beetle::RendererCommand::Clear();
+
+    static float rotation = 0.0f;
+    rotation += ts * 50.0f;
+
+    // --- First scene pass ---
+    Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+
+    Beetle::Renderer2D::DrawRotatedQuad({ 1.0f, 0.0f }, { 0.8f, 0.8f },
+        45.0f, { 0.8f, 0.2f, 0.3f, 1.0f });  // 45 degrees
+
+    Beetle::Renderer2D::DrawQuad({ -1.0f, 0.0f }, { 0.8f, 0.8f },
+        { 0.8f, 0.2f, 0.3f, 1.0f });
+
+    Beetle::Renderer2D::DrawQuad({ 0.5f, -0.5f }, { 0.5f, 0.75f },
+        m_SquareColor);
+
+    Beetle::Renderer2D::DrawQuad({ 0.0f, 0.0f, -0.1f }, { 20.0f, 20.0f },
+        m_CheckerBoard, 10.0f);
+
+    Beetle::Renderer2D::DrawRotatedQuad({ -2.0f, 0.0f, 0.0f }, { 1.0f, 1.0f },
+        rotation, m_CheckerBoard, 20.0f);  // rotation is degrees accumulated
+
+    Beetle::Renderer2D::EndScene();
+
+    // --- Second scene pass (grid of colored quads) ---
+    Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+
+    for (float y = -5.0f; y < 5.0f; y += 0.5f)
+    {
+        for (float x = -5.0f; x < 5.0f; x += 0.5f)
+        {
+            glm::vec4 color = { (x + 5.0f) / 10.0f, 0.4f,
+                                (y + 5.0f) / 10.0f, 0.7f };
+            Beetle::Renderer2D::DrawQuad({ x, y }, { 0.45f, 0.45f }, color);
+        }
+    }
+
+    Beetle::Renderer2D::EndScene();
+}
+```

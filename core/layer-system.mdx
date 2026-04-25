@@ -1,0 +1,203 @@
+---
+title: "Layer stack: composable logic in Beetle Engine"
+description: "Understand how layers and overlays are organized in the LayerStack, how events propagate through them, and how to create your own custom Layer subclass."
+---
+
+Beetle Engine organises your application logic into discrete **layers** stacked on top of one another. Each layer is an isolated unit that can receive per-frame updates, render ImGui widgets, and handle events. The engine routes everything through the `LayerStack` in a well-defined order, giving you fine-grained control over which subsystems run and in what priority.
+
+---
+
+## The Layer abstract class
+
+`Layer` (`Beetle/Core/Layer.h`) is the base class for every piece of logic you add to a Beetle application. You subclass it and override only the virtual methods you need.
+
+```cpp
+namespace Beetle {
+    class Layer
+    {
+    public:
+        Layer(const std::string& name = "Layer");
+        virtual ~Layer();
+
+        virtual void OnAttach() {}
+        virtual void OnDetach() {}
+        virtual void OnUpdate(TimeStamp ts) {}
+        virtual void OnImGuiRender() {}
+        virtual void OnEvent(Event& event) {}
+
+        const std::string& GetName() const;
+    };
+}
+```
+
+<Accordion title="Virtual method reference">
+
+| Method | When it is called |
+|---|---|
+| `OnAttach()` | Immediately after the layer is pushed onto the stack via `PushLayer` or `PushOverlay`. Use this for resource loading — textures, shaders, scene setup. |
+| `OnDetach()` | When the layer is popped or when the `LayerStack` destructor runs at application shutdown. Use this to free GPU resources. |
+| `OnUpdate(TimeStamp ts)` | Once per frame, before ImGui rendering. Receives the delta time since the last frame. |
+| `OnImGuiRender()` | Once per frame, between `ImGuiLayer::Begin()` and `ImGuiLayer::End()`. Safe to call any ImGui widget function here. |
+| `OnEvent(Event& event)` | When an event reaches this layer. Set `event.Handled = true` to stop further propagation. |
+
+</Accordion>
+
+---
+
+## The LayerStack
+
+`LayerStack` (`Beetle/Core/LayerStack.h`) holds all layers in a single `std::vector<Layer*>`. It maintains an insertion index (`m_LayerInsertIndex`) that acts as the boundary between regular layers and overlays.
+
+```
+Index:  [  0  |  1  |  2  ||  3  |  4  ]
+         layer  layer  layer  overlay  overlay
+                             ^
+                      m_LayerInsertIndex
+```
+
+### PushLayer
+
+```cpp
+void PushLayer(Layer* layer);
+```
+
+Inserts the layer at position `m_LayerInsertIndex` and increments the index. This keeps all regular layers packed at the front of the vector, in the order they were pushed. `Application::PushLayer` calls `OnAttach()` immediately after insertion.
+
+### PushOverlay
+
+```cpp
+void PushOverlay(Layer* overlay);
+```
+
+Appends the overlay at the **back** of the vector — always after all regular layers. `m_LayerInsertIndex` is not changed. `Application::PushOverlay` calls `OnAttach()` immediately after insertion.
+
+<Note>
+The built-in `ImGuiLayer` is always pushed as an overlay in `Application`'s constructor, so it is guaranteed to sit at the very end of the stack and render on top of everything else.
+</Note>
+
+### PopLayer and PopOverlay
+
+```cpp
+void PopLayer(Layer* layer);
+void PopOverlay(Layer* overlay);
+```
+
+Both methods search the appropriate section of the vector, call `OnDetach()` on the layer, and erase it. `PopLayer` decrements `m_LayerInsertIndex` to keep the boundary correct.
+
+---
+
+## Event propagation order
+
+When `Application::OnEvent` receives an event it walks the stack **in reverse** — from the back of the vector (topmost overlay) toward the front (bottom-most layer):
+
+```cpp
+for (auto it = m_LayerStack.rbegin(); it != m_LayerStack.rend(); ++it)
+{
+    if (e.Handled)
+        break;
+    (*it)->OnEvent(e);
+}
+```
+
+This means overlays get first refusal on every event. If an overlay (or a higher layer) marks the event as handled, lower layers never see it. The typical use case is the ImGui overlay consuming mouse and keyboard events when the cursor is over an ImGui window, preventing them from reaching your gameplay layers.
+
+**Update order is the opposite**: `OnUpdate` and `OnImGuiRender` iterate forward — bottom layer first, top overlay last — so base layers update their state before overlays read it.
+
+```
+Event routing:   [overlay → ... → layer0]   (reverse, stops on Handled)
+Update routing:  [layer0  → ... → overlay]  (forward, all layers called)
+```
+
+---
+
+## Creating a custom layer
+
+Here is a complete, self-contained example of a custom layer that loads a texture on attach, updates a camera each frame, and handles events:
+
+```cpp
+#include "Beetle.h"
+
+class GameLayer : public Beetle::Layer
+{
+public:
+    GameLayer()
+        : Layer("GameLayer"),
+          m_CameraController(1280.0f / 720.0f, /*rotation=*/true)
+    {}
+
+    void OnAttach() override
+    {
+        // Load resources here — the renderer is ready.
+        m_Texture = Beetle::Texture2D::Create("assets/textures/player.png");
+    }
+
+    void OnDetach() override
+    {
+        // m_Texture (a Ref<>) will be released automatically,
+        // but you can do explicit cleanup here if needed.
+    }
+
+    void OnUpdate(Beetle::TimeStamp ts) override
+    {
+        // ts is seconds since the last frame.
+        m_CameraController.OnUpdate(ts);
+
+        Beetle::RendererCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+        Beetle::RendererCommand::Clear();
+
+        Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+        Beetle::Renderer2D::DrawQuad({ 0.0f, 0.0f }, { 1.0f, 1.0f }, m_Texture);
+        Beetle::Renderer2D::EndScene();
+    }
+
+    void OnImGuiRender() override
+    {
+        ImGui::Begin("Game");
+        ImGui::Text("Layer: %s", GetName().c_str());
+        ImGui::End();
+    }
+
+    void OnEvent(Beetle::Event& event) override
+    {
+        m_CameraController.OnEvent(event);
+    }
+
+private:
+    Beetle::OrthographicCameraController m_CameraController;
+    Beetle::Ref<Beetle::Texture2D>       m_Texture;
+};
+```
+
+Push it from your `Application` subclass:
+
+```cpp
+class MyApp : public Beetle::Application
+{
+public:
+    MyApp()
+    {
+        PushLayer(new GameLayer());
+    }
+};
+```
+
+---
+
+## ImGui overlays
+
+`ImGuiLayer` is an overlay that the engine pushes automatically. It manages the ImGui frame lifecycle:
+
+- `ImGuiLayer::Begin()` — starts a new ImGui frame (called by the run loop before any layer's `OnImGuiRender`).
+- `ImGuiLayer::End()` — renders draw data to the screen (called after all layers' `OnImGuiRender`).
+
+You should never call these yourself. Simply override `OnImGuiRender()` in your own layers and use any ImGui widget API — the engine ensures the frame is open when your method is called.
+
+If you need to configure ImGui (for example, to load a custom font), do so in your layer's `OnAttach()`:
+
+```cpp
+void OnAttach() override
+{
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->AddFontFromFileTTF("assets/fonts/OpenSans-Regular.ttf", 18.0f);
+}
+```

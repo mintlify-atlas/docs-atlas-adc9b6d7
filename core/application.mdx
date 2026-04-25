@@ -1,0 +1,237 @@
+---
+title: "Application class and lifecycle in Beetle Engine"
+description: "Learn how the Application class manages the run loop, window, layer stack, and ImGui integration, and how to create your own client application."
+---
+
+The `Application` class is the heart of every Beetle Engine program. It owns the window, drives the per-frame update loop, routes events to layers, and coordinates the ImGui overlay. You subclass it once in your client project, push your layers in the constructor, and let `EntryPoint.h` handle the rest.
+
+## The Application class
+
+`Application` lives in `Beetle/Core/Application.h` and is declared inside the `Beetle` namespace. Its public surface is intentionally small — the engine manages the internals while you interact through a handful of well-defined methods.
+
+```cpp
+namespace Beetle {
+    class Application
+    {
+    public:
+        Application(const std::string& name = "Beetle App");
+        virtual ~Application();
+
+        void OnEvent(Event& e);
+
+        void PushLayer(Layer* layer);
+        void PushOverlay(Layer* layer);
+
+        Window& GetWindow();
+        void Close();
+        ImGuiLayer* GetImGuiLayer();
+
+        static Application& Get();   // singleton accessor
+
+    private:
+        void Run();
+        // ...
+    };
+}
+```
+
+### Constructor
+
+```cpp
+Application(const std::string& name = "Beetle App");
+```
+
+The constructor sets up the static singleton pointer, creates the platform window via `Window::Create`, installs the event callback with `BEETLE_BIND_EVENT_FN`, initialises the renderer, and pushes a built-in `ImGuiLayer` as an overlay. You rarely call this directly — see [Creating your application](#creating-your-application) below.
+
+### Run loop
+
+`Run()` is called by `EntryPoint.h` after your `CreateApplication()` returns. You never call it yourself. Each iteration:
+
+<Steps>
+  <Step title="Compute delta time">
+    The loop reads `glfwGetTime()` and subtracts `m_LastFrameTime` to produce a `TimeStamp` (delta time in seconds).
+  </Step>
+  <Step title="Update layers">
+    Every `Layer` in the stack receives `OnUpdate(ts)` in bottom-to-top order (front to back of the vector).
+  </Step>
+  <Step title="Render ImGui">
+    `ImGuiLayer::Begin()` is called, then every layer's `OnImGuiRender()`, then `ImGuiLayer::End()`.
+  </Step>
+  <Step title="Poll window events">
+    `Window::OnUpdate()` polls OS events and flushes them through `OnEvent`.
+  </Step>
+</Steps>
+
+When the window is minimised (`m_Minimized == true`) the update and ImGui steps are skipped entirely to avoid zero-size framebuffer issues.
+
+### OnEvent
+
+```cpp
+void OnEvent(Event& e);
+```
+
+`OnEvent` is the single entry point for all window events. It first gives the application itself a chance to handle `WindowCloseEvent` and `WindowResizeEvent`, then walks the layer stack in **reverse order** (overlays first, then layers), stopping as soon as a layer sets `e.Handled = true`.
+
+### PushLayer and PushOverlay
+
+```cpp
+void PushLayer(Layer* layer);
+void PushOverlay(Layer* layer);
+```
+
+Both methods insert the layer into the `LayerStack` and immediately call `layer->OnAttach()`. Layers are inserted before overlays in the internal vector; overlays are always appended at the end. See [Layer stack architecture](/core/layer-system) for the full ordering rules.
+
+### Close
+
+```cpp
+void Close();
+```
+
+Sets the internal `m_Running` flag to `false`. The run loop exits cleanly at the end of the current frame.
+
+### GetWindow
+
+```cpp
+Window& GetWindow();
+```
+
+Returns a reference to the platform window. Use this to read the viewport dimensions or install additional callbacks.
+
+### GetImGuiLayer
+
+```cpp
+ImGuiLayer* GetImGuiLayer();
+```
+
+Returns a raw pointer to the `ImGuiLayer` overlay that the engine pushes automatically. Useful when you need to configure ImGui fonts or styles after startup.
+
+### Static Get()
+
+```cpp
+static Application& Get();
+```
+
+<Note>
+`Application::Get()` returns the single global `Application` instance. Beetle enforces this singleton at construction time — attempting to create a second `Application` will assert and abort. Prefer passing references or using `Application::Get()` only at call sites where the lifetime is clear.
+</Note>
+
+---
+
+## Creating your application
+
+You wire Beetle into your project by:
+
+1. Including `<Beetle/Core/EntryPoint.h>` in exactly **one** translation unit.
+2. Subclassing `Beetle::Application`.
+3. Defining the free function `Beetle::CreateApplication()`.
+
+`EntryPoint.h` contains the real `main()`. It calls `Log::Init()`, then calls your `CreateApplication()`, runs the app, and deletes it. Here is the complete example from the Sandbox project:
+
+```cpp
+// SandboxApp.cpp
+#include <Beetle.h>
+#include <Beetle/Core/EntryPoint.h>
+#include "Sandbox2D.h"
+
+class Sandbox : public Beetle::Application
+{
+public:
+    Sandbox()
+    {
+        PushLayer(new Sandbox2D());
+    }
+};
+
+Beetle::Application* Beetle::CreateApplication()
+{
+    return new Sandbox();
+}
+```
+
+`Beetle::CreateApplication()` is declared in `Application.h` with the comment *"to be defined in client"*. The engine does not provide a default implementation — if you forget it, the linker will tell you.
+
+---
+
+## TimeStamp and delta time
+
+`TimeStamp` (`Beetle/Core/TimeStamp.h`) is a thin wrapper around a `float` representing elapsed seconds since the previous frame.
+
+```cpp
+class TimeStamp
+{
+public:
+    TimeStamp(float time = 0.0f);
+
+    operator float() const;             // implicit conversion to seconds
+    float GetSeconds() const;
+    float GetMilliseconds() const;
+};
+```
+
+The application computes it each frame:
+
+```cpp
+float time        = (float)glfwGetTime();
+TimeStamp timestep = time - m_LastFrameTime;
+m_LastFrameTime   = time;
+```
+
+It is then forwarded to every layer via `OnUpdate(timestep)`. Because `TimeStamp` converts implicitly to `float`, you can use it directly in arithmetic:
+
+```cpp
+void Sandbox2D::OnUpdate(Beetle::TimeStamp ts)
+{
+    m_CameraController.OnUpdate(ts);
+
+    static float rotation = 0.0f;
+    rotation += ts * 50.0f;   // degrees per second
+}
+```
+
+---
+
+## Smart pointer aliases
+
+`Core.h` provides two lightweight type aliases and their factory functions so you can avoid spelling out `std::unique_ptr` and `std::shared_ptr` throughout your code.
+
+<CardGroup cols={2}>
+  <Card title="Scope&lt;T&gt;" icon="lock">
+    Alias for `std::unique_ptr<T>`. Use when a single owner holds the resource for its entire lifetime.
+
+    ```cpp
+    Beetle::Scope<MySystem> sys =
+        Beetle::CreateScope<MySystem>(args...);
+    ```
+  </Card>
+  <Card title="Ref&lt;T&gt;" icon="share-nodes">
+    Alias for `std::shared_ptr<T>`. Use when the resource must be shared across multiple owners.
+
+    ```cpp
+    Beetle::Ref<Beetle::Texture2D> tex =
+        Beetle::CreateRef<Beetle::Texture2D>();
+    ```
+  </Card>
+</CardGroup>
+
+```cpp
+// Core.h — definitions
+template<typename T>
+using Scope = std::unique_ptr<T>;
+
+template<typename T, typename... Args>
+constexpr Scope<T> CreateScope(Args&&... args)
+{
+    return std::make_unique<T>(std::forward<Args>(args)...);
+}
+
+template<typename T>
+using Ref = std::shared_ptr<T>;
+
+template<typename T, typename... Args>
+constexpr Ref<T> CreateRef(Args&&... args)
+{
+    return std::make_shared<T>(std::forward<Args>(args)...);
+}
+```
+
+Prefer `Scope` for objects with a clear single owner (such as the window or renderer), and `Ref` for GPU resources like textures and shaders that are shared between the renderer and your layers.

@@ -1,0 +1,320 @@
+---
+title: "Synchronous event system design in Beetle Engine"
+description: "Explore Beetle's synchronous event system: EventType, EventCategory bitmasks, the EventDispatcher template, and how to handle events inside a Layer."
+---
+
+Beetle Engine uses a **synchronous, blocking** event system. When the platform layer detects a window or input event it immediately calls `Application::OnEvent`, which dispatches the event down the layer stack in the same frame. There is no event queue — events are handled the moment they arrive.
+
+---
+
+## EventType
+
+Every concrete event has a unique `EventType` value drawn from the following enum:
+
+```cpp
+enum class EventType
+{
+    None = 0,
+
+    // Window events
+    WindowClose, WindowResize, WindowFocus, WindowLostFocus, WindowMoved,
+
+    // Application lifecycle
+    AppTick, AppUpdate, AppRender,
+
+    // Keyboard events
+    KeyPressed, KeyReleased, KeyTyped,
+
+    // Mouse events
+    MouseButtonPressed, MouseButtonReleased, MouseMoved, MouseScrolled
+};
+```
+
+---
+
+## EventCategory bitmask
+
+Events can belong to more than one logical category. The `EventCategory` flags use `BIT(x)` — a simple left-shift macro — so they can be OR-ed together:
+
+```cpp
+#define BIT(x) (1 << x)
+
+enum EventCategory
+{
+    None                     = 0,
+    EventCategoryApplication = BIT(0),  // 1
+    EventCategoryInput       = BIT(1),  // 2
+    EventCategoryKeyboard    = BIT(2),  // 4
+    EventCategoryMouse       = BIT(3),  // 8
+    EventCategoryMouseButton = BIT(4)   // 16
+};
+```
+
+You query membership with `IsInCategory`:
+
+```cpp
+bool IsInCategory(EventCategory category)
+{
+    return GetCategoryFlags() & category;
+}
+```
+
+For example, a `KeyPressedEvent` returns `EventCategoryKeyboard | EventCategoryInput` from `GetCategoryFlags()`, so `IsInCategory(EventCategoryInput)` returns `true`.
+
+---
+
+## The Event base class
+
+All events inherit from `Beetle::Event`:
+
+```cpp
+class Event
+{
+public:
+    bool Handled = false;
+
+    virtual EventType   GetEventType()     const = 0;
+    virtual const char* GetName()          const = 0;
+    virtual int         GetCategoryFlags() const = 0;
+    virtual std::string ToString()         const { return GetName(); }
+
+    bool IsInCategory(EventCategory category);
+};
+```
+
+The `Handled` flag is **mutable public state**. When a layer sets `event.Handled = true`, `Application::OnEvent` stops iterating the stack and no further layers see the event.
+
+---
+
+## EVENT_CLASS_TYPE and EVENT_CLASS_CATEGORY macros
+
+Writing the same boilerplate for every concrete event class is error-prone, so two macros handle it:
+
+```cpp
+#define EVENT_CLASS_TYPE(type)                                          \
+    static  EventType GetStaticType()  { return EventType::##type; }   \
+    virtual EventType GetEventType()   const override { return GetStaticType(); } \
+    virtual const char* GetName()      const override { return #type; }
+
+#define EVENT_CLASS_CATEGORY(category)                                  \
+    virtual int GetCategoryFlags() const override { return category; }
+```
+
+You add both to every leaf event class:
+
+```cpp
+class WindowResizeEvent : public Event
+{
+public:
+    WindowResizeEvent(unsigned int width, unsigned int height);
+    unsigned int GetWidth()  const;
+    unsigned int GetHeight() const;
+
+    EVENT_CLASS_TYPE(WindowResize)
+    EVENT_CLASS_CATEGORY(EventCategoryApplication)
+};
+```
+
+`GetStaticType()` (static) is what `EventDispatcher` uses for type-safe dispatch — it never needs a live instance.
+
+---
+
+## EventDispatcher
+
+`EventDispatcher` is a template-driven helper that matches an event's runtime type against a desired type and, if they match, calls your handler:
+
+```cpp
+class EventDispatcher
+{
+public:
+    EventDispatcher(Event& event);
+
+    template<typename T, typename F>
+    bool Dispatch(const F& func);
+};
+```
+
+The `Dispatch` implementation:
+
+```cpp
+template<typename T, typename F>
+bool Dispatch(const F& func)
+{
+    if (m_Event.GetEventType() == T::GetStaticType())
+    {
+        m_Event.Handled |= func(static_cast<T&>(m_Event));
+        return true;
+    }
+    return false;
+}
+```
+
+- `T` is the event type you want to handle (e.g. `KeyPressedEvent`).
+- `func` must be callable with a `T&` and return `bool`. Returning `true` marks the event handled.
+- `Dispatch` returns `true` if the type matched (regardless of the handler's return value).
+
+---
+
+## BEETLE_BIND_EVENT_FN
+
+Binding a member function to pass as the `func` argument is verbose with raw `std::bind`. The macro wraps this:
+
+```cpp
+#define BEETLE_BIND_EVENT_FN(fn) std::bind(&fn, this, std::placeholders::_1)
+```
+
+Usage:
+
+```cpp
+dispatcher.Dispatch<WindowCloseEvent>(
+    BEETLE_BIND_EVENT_FN(Application::OnWindowClose)
+);
+```
+
+---
+
+## Handling events in a layer
+
+Here is a complete example of an `OnEvent` override that handles keyboard and mouse scroll events:
+
+```cpp
+void GameLayer::OnEvent(Beetle::Event& event)
+{
+    Beetle::EventDispatcher dispatcher(event);
+
+    dispatcher.Dispatch<Beetle::KeyPressedEvent>(
+        BEETLE_BIND_EVENT_FN(GameLayer::OnKeyPressed)
+    );
+
+    dispatcher.Dispatch<Beetle::MouseScrolledEvent>(
+        BEETLE_BIND_EVENT_FN(GameLayer::OnMouseScrolled)
+    );
+}
+
+bool GameLayer::OnKeyPressed(Beetle::KeyPressedEvent& e)
+{
+    BT_TRACE("Key pressed: {0} (repeats: {1})", e.GetKeyCode(), e.GetRepeatCount());
+
+    if (e.GetKeyCode() == BT_KEY_ESCAPE)
+    {
+        Beetle::Application::Get().Close();
+        return true;   // mark handled — stop propagation
+    }
+    return false;
+}
+
+bool GameLayer::OnMouseScrolled(Beetle::MouseScrolledEvent& e)
+{
+    BT_TRACE("Scroll: {0}, {1}", e.GetXOffset(), e.GetYOffset());
+    m_Zoom -= e.GetYOffset() * 0.25f;
+    return false;   // let other layers see it too
+}
+```
+
+---
+
+## Key and mouse event classes
+
+<CodeGroup>
+
+```cpp Key events
+// Base — shared by Pressed, Released, Typed
+class KeyEvent : public Event
+{
+public:
+    int GetKeyCode()   const;   // GLFW key code
+    int GetModifiers() const;   // Shift, Ctrl, Alt bitmask
+
+    EVENT_CLASS_CATEGORY(EventCategoryKeyboard | EventCategoryInput)
+};
+
+// Key held down (fires repeatedly while held)
+class KeyPressedEvent : public KeyEvent
+{
+public:
+    int GetRepeatCount() const;
+    EVENT_CLASS_TYPE(KeyPressed)
+};
+
+// Key released
+class KeyReleasedEvent : public KeyEvent
+{
+public:
+    EVENT_CLASS_TYPE(KeyReleased)
+};
+
+// Character typed (Unicode codepoint)
+class KeyTypedEvent : public KeyEvent
+{
+public:
+    EVENT_CLASS_TYPE(KeyTyped)
+};
+```
+
+```cpp Mouse events
+// Cursor position changed
+class MouseMovedEvent : public Event
+{
+public:
+    float GetX() const;
+    float GetY() const;
+    EVENT_CLASS_TYPE(MouseMoved)
+    EVENT_CLASS_CATEGORY(EventCategoryMouse | EventCategoryInput)
+};
+
+// Scroll wheel
+class MouseScrolledEvent : public Event
+{
+public:
+    float GetXOffset() const;
+    float GetYOffset() const;
+    EVENT_CLASS_TYPE(MouseScrolled)
+    EVENT_CLASS_CATEGORY(EventCategoryMouse | EventCategoryInput)
+};
+
+// Mouse button base
+class MouseButtonEvent : public Event
+{
+public:
+    int GetMouseButton() const;
+    EVENT_CLASS_CATEGORY(EventCategoryMouse | EventCategoryInput)
+};
+
+class MouseButtonPressedEvent  : public MouseButtonEvent
+{
+    EVENT_CLASS_TYPE(MouseButtonPressed)
+};
+
+class MouseButtonReleasedEvent : public MouseButtonEvent
+{
+    EVENT_CLASS_TYPE(MouseButtonReleased)
+};
+```
+
+</CodeGroup>
+
+---
+
+## Event flow summary
+
+<Steps>
+  <Step title="OS fires a raw input event">
+    GLFW (or the platform backend) detects a keypress, mouse movement, or window action.
+  </Step>
+  <Step title="Window callback invokes Application::OnEvent">
+    The window's event callback — registered with `BEETLE_BIND_EVENT_FN(Application::OnEvent)` — is called with a concrete `Event&`.
+  </Step>
+  <Step title="Application handles window-level events first">
+    `EventDispatcher` checks for `WindowCloseEvent` and `WindowResizeEvent` before the layer stack sees the event.
+  </Step>
+  <Step title="Layers receive the event in reverse order">
+    The stack is iterated from back (topmost overlay) to front (bottom layer). Each layer calls its own `EventDispatcher` chain. Iteration stops when `event.Handled` is `true`.
+  </Step>
+  <Step title="Unhandled events are silently dropped">
+    If no layer sets `Handled`, the event is simply discarded at the end of the loop with no side effects.
+  </Step>
+</Steps>
+
+<Warning>
+Always check `event.Handled` before doing expensive work in `OnEvent`. An ImGui overlay will mark mouse-click events as handled when the cursor is over a widget, so a downstream gameplay layer should not react to those clicks. Use `IsInCategory` or dispatch checks to guard your logic.
+</Warning>

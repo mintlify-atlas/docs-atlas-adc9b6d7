@@ -1,0 +1,71 @@
+---
+title: "OpenGL rendering architecture in Beetle Engine"
+description: "A layered renderer design that abstracts graphics APIs behind a static command facade, with batch-oriented 2D rendering and GPU resource types built on top."
+---
+
+Beetle's rendering system is organized as a strict stack of layers. Each layer has a single responsibility and depends only on the layer below it, which means you can swap the underlying graphics API — or add a new one — without touching your scene code. Currently the only backend is OpenGL, implemented in the `Platform/OpenGL/` directory.
+
+## The rendering stack
+
+<CardGroup cols={2}>
+  <Card title="RendererAPI" icon="microchip">
+    Abstract base class that owns raw GPU calls: `Init`, `SetViewport`, `SetClearColor`, `Clear`, and `DrawIndexed`. Each graphics backend provides a concrete subclass (e.g. `OpenGLRendererAPI`).
+  </Card>
+  <Card title="RendererCommand" icon="terminal">
+    A thin static facade over `RendererAPI`. Every method is `inline` and forwards directly to the active `RendererAPI` instance. Your application always calls `RendererCommand` rather than touching the API class directly.
+  </Card>
+  <Card title="Renderer" icon="cube">
+    Scene-level 3D renderer. Stores a `SceneData` struct that holds the camera's `ViewProjectionMatrix` and exposes `BeginScene`, `EndScene`, and `Submit` for rendering arbitrary vertex arrays with a shader.
+  </Card>
+  <Card title="Renderer2D" icon="square">
+    Batch-oriented 2D renderer. Collects up to 20 000 quads per draw call into a single dynamic vertex buffer, minimizing GPU submissions. Exposes a high-level `DrawQuad` / `DrawRotatedQuad` API and a `Statistics` struct for profiling.
+  </Card>
+</CardGroup>
+
+## Abstraction goal
+
+`RendererAPI` defines the API contract as a pure-virtual C++ interface. `Shader::Create`, `Texture2D::Create`, `VertexBuffer::Create`, and all other factory methods query `Renderer::GetAPI()` at runtime and return the correct concrete type. Your game code only ever holds a `Ref<Shader>` or `Ref<Texture2D>` — it never links against an OpenGL symbol directly.
+
+```cpp
+// Beetle chooses the backend; your code never changes
+auto shader  = Shader::Create("assets/shaders/Texture.glsl");
+auto texture = Texture2D::Create("assets/textures/checkerboard.png");
+```
+
+## GPU resource types
+
+| Type | Header | Purpose |
+|---|---|---|
+| `VertexBuffer` | `Buffer.h` | Holds per-vertex data on the GPU. Can be allocated with a fixed size (dynamic) or from a float array (static). |
+| `IndexBuffer` | `Buffer.h` | Stores element indices for indexed draw calls. |
+| `VertexArray` | `VertexArray.h` | Encapsulates one or more `VertexBuffer`s plus one `IndexBuffer` with their `BufferLayout`. |
+| `FrameBuffer` | `FrameBuffer.h` | Off-screen render target. Created from a `FrameBufferSpecification` (width, height, sample count). |
+
+`BufferLayout` describes the per-vertex attribute stream using `ShaderDataType` enumerators (`Float`, `Float2`, `Float3`, `Float4`, `Mat3`, `Mat4`, `Int`, `Bool`, …). Beetle calculates byte offsets and stride automatically when you construct a layout.
+
+## Initialization sequence
+
+<Steps>
+  <Step title="Call Renderer2D::Init()">
+    Allocates the dynamic quad vertex buffer, builds a pre-computed index buffer for up to 20 000 quads, uploads a 1×1 white texture to slot 0, and loads `assets/shaders/Texture.glsl`.
+  </Step>
+  <Step title="Clear the frame">
+    Use `RendererCommand::SetClearColor` and `RendererCommand::Clear` at the start of each frame before issuing any draw calls.
+  </Step>
+  <Step title="Open a scene">
+    Call `Renderer2D::BeginScene(camera)` to bind the texture shader and upload the camera's view-projection matrix.
+  </Step>
+  <Step title="Issue draw calls">
+    Call any combination of `DrawQuad` and `DrawRotatedQuad`. The renderer batches them into the shared vertex buffer.
+  </Step>
+  <Step title="Close the scene">
+    Call `Renderer2D::EndScene()` to flush the accumulated vertex data to the GPU and issue the indexed draw call.
+  </Step>
+  <Step title="Clean up on exit">
+    Call `Renderer2D::Shutdown()` to release the heap-allocated vertex buffer.
+  </Step>
+</Steps>
+
+<Note>
+  OpenGL is the only graphics backend currently implemented. The `RendererAPI::API` enum reserves a `None` slot and the factory functions assert-fail if it is selected, so attempting to run without a valid backend will crash with a clear message at startup.
+</Note>

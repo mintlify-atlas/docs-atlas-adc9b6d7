@@ -1,0 +1,160 @@
+---
+title: "Creating and managing entities in Beetle Engine"
+description: "Learn how to create entities with Scene::CreateEntity, attach and query components with the Entity handle, and iterate over entities in your scene."
+---
+
+An `Entity` in Beetle is a lightweight value type that pairs an `entt::entity` integer handle with a pointer to the `Scene` that owns it. All the actual data lives in the scene's internal `entt::registry`; the `Entity` object simply provides a typed, safe interface for reading and writing that data. You never construct an `Entity` directly — you always receive one from `Scene::CreateEntity`.
+
+## The Entity class
+
+```cpp
+namespace Beetle {
+
+    class Entity {
+    public:
+        Entity() = default;
+        Entity(entt::entity handle, Scene* scene);
+        Entity(const Entity& other) = default;
+
+        template<typename T, typename... Args>
+        T& AddComponent(Args&&... args);
+
+        template<typename T>
+        T& GetComponent();
+
+        template<typename T>
+        bool HasComponent();
+
+        template<typename T>
+        void RemoveComponent();
+
+        operator bool() const;
+
+    private:
+        entt::entity m_EntityHandle{ 0 };
+        Scene*       m_Scene = nullptr;
+    };
+}
+```
+
+### Method reference
+
+| Method | Return type | Description |
+|---|---|---|
+| `AddComponent<T>(args...)` | `T&` | Constructs a `T` in the registry with the forwarded arguments and returns a reference to it. Undefined behaviour if `T` is already present. |
+| `GetComponent<T>()` | `T&` | Returns a reference to the existing `T` on this entity. Asserts (in debug) if the component is absent. |
+| `HasComponent<T>()` | `bool` | Returns `true` if this entity currently has a component of type `T`. |
+| `RemoveComponent<T>()` | `void` | Removes the `T` component from this entity. |
+| `operator bool()` | `bool` | Returns `true` when the handle is not `entt::null`. Use this to check whether an `Entity` value was default-constructed or has been assigned. |
+
+<Warning>
+  Calling `GetComponent<T>()` on an entity that does not have `T` is undefined behaviour in release builds. Always guard with `HasComponent<T>()` if the component's presence is uncertain.
+</Warning>
+
+## Creating entities
+
+Call `Scene::CreateEntity` to add an entity to a scene. Every new entity automatically receives a `TagComponent` and a `TransformComponent`; you do not need to add these yourself.
+
+```cpp
+Ref<Scene> scene = CreateRef<Scene>();
+
+// Name defaults to "Entity" if the string is empty
+Entity player = scene->CreateEntity("Player");
+```
+
+The returned `Entity` is a copyable value. You can store it in a member variable and use it across multiple frames.
+
+## Adding components
+
+Call `AddComponent<T>` to attach additional components. Arguments are forwarded directly to the component's constructor.
+
+```cpp
+// Add a sprite with an explicit RGBA colour
+player.AddComponent<SpriteRendererComponent>(glm::vec4{ 1.0f, 0.5f, 0.0f, 1.0f });
+```
+
+## Complete example: creating an entity with all three built-in components
+
+<Steps>
+  <Step title="Create a scene">
+    ```cpp
+    Ref<Scene> scene = CreateRef<Scene>();
+    ```
+  </Step>
+  <Step title="Spawn an entity">
+    `CreateEntity` automatically attaches `TagComponent` and `TransformComponent`.
+
+    ```cpp
+    Entity hero = scene->CreateEntity("Hero");
+    ```
+  </Step>
+  <Step title="Customise the transform">
+    Retrieve the automatically-added `TransformComponent` and set a world-space matrix.
+
+    ```cpp
+    auto& tc = hero.GetComponent<TransformComponent>();
+    tc.Transform = glm::translate(glm::mat4(1.0f), glm::vec3(2.0f, 0.0f, 0.0f));
+    ```
+  </Step>
+  <Step title="Add a sprite renderer">
+    ```cpp
+    hero.AddComponent<SpriteRendererComponent>(glm::vec4{ 0.2f, 0.6f, 1.0f, 1.0f });
+    ```
+  </Step>
+  <Step title="Drive the scene each frame">
+    `OnUpdate` will automatically find the entity and submit it for rendering.
+
+    ```cpp
+    scene->OnUpdate(ts);
+    ```
+  </Step>
+</Steps>
+
+## Checking and removing components
+
+```cpp
+if (hero.HasComponent<SpriteRendererComponent>()) {
+    auto& sprite = hero.GetComponent<SpriteRendererComponent>();
+    sprite.Color = glm::vec4{ 1.0f, 0.0f, 0.0f, 1.0f }; // turn red
+
+    // Remove the component entirely
+    hero.RemoveComponent<SpriteRendererComponent>();
+}
+```
+
+## Checking whether an Entity is valid
+
+The `operator bool` conversion lets you guard any code that uses an entity that might not have been assigned yet:
+
+```cpp
+Entity m_Selected; // default-constructed: handle == entt::null
+
+if (m_Selected) {
+    auto& tag = m_Selected.GetComponent<TagComponent>();
+    // ...
+}
+```
+
+This pattern is used in `EditorLayer::OnImGuiRender`, where `m_SquareEntity` is tested with `if (m_SquareEntity)` before its tag and colour are read.
+
+## Iterating over entities in a scene
+
+`Scene::OnUpdate` uses an entt group to iterate every entity that simultaneously owns a `TransformComponent` and a `SpriteRendererComponent`:
+
+```cpp
+void Scene::OnUpdate(TimeStamp ts)
+{
+    auto group = m_Registry.group<TransformComponent>(entt::get<SpriteRendererComponent>);
+    for (auto entity : group)
+    {
+        auto& [transform, sprite] = group.get<TransformComponent, SpriteRendererComponent>(entity);
+        Renderer2D::DrawQuad(transform, sprite.Color);
+    }
+}
+```
+
+If you need to iterate in your own systems, request the registry through a `friend` relationship or expose a typed view from `Scene`. The same entt `view` and `group` APIs apply.
+
+<Note>
+  EnTT groups are faster than views when you consistently need two or more components together because EnTT packs their storage in a compatible order at registration time.
+</Note>

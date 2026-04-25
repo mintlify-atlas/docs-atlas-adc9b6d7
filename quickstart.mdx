@@ -1,81 +1,129 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
-icon: 'rocket'
+title: "Get started with Beetle Engine in minutes"
+description: "Clone the repository, generate Visual Studio project files with Premake5, and run your first Beetle application on Windows x64 in a few steps."
 ---
 
-## Get started in three steps
+Beetle Engine uses [Premake5](https://premake.github.io/) to generate Visual Studio solution and project files from a single `premake5.lua` script. The steps below walk you from a fresh clone to a running application using either the **Sandbox** test app or the **Stag** editor.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+  Beetle Engine currently targets **Windows x64 only**. Visual Studio 2022 is required. macOS, Linux, and other platforms are not yet supported.
+</Note>
 
-### Step 1: Set up your local environment
+<Steps>
+  <Step title="Clone the repository">
+    Open a terminal and clone the Beetle Engine repository:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    git clone https://github.com/Sam-xiexielaoshi/Beetle.git
+    cd Beetle
+    ```
+  </Step>
 
-### Step 2: Deploy your changes
+  <Step title="Generate Visual Studio project files">
+    Run Premake5 targeting Visual Studio 2022. You can either call `premake5` directly or use the provided helper script:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    <CodeGroup>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash premake5 directly
+    premake5 vs2022
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash using the helper script
+    scripts\Win-GenProjects.bat
+    ```
 
-### Step 3: Go live
+    </CodeGroup>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    This generates `Beetle.sln` along with `.vcxproj` files for the **Beetle**, **Sandbox**, and **Stag** projects, and all vendored dependencies.
+  </Step>
+
+  <Step title="Open the solution">
+    Open `Beetle.sln` in Visual Studio 2022. The workspace is pre-configured with **Stag** as the startup project.
+  </Step>
+
+  <Step title="Choose a build configuration">
+    Beetle supports three configurations. Select one from the Visual Studio toolbar before building:
+
+    | Configuration | Purpose |
+    |---|---|
+    | **Debug** | Full symbols, assertions enabled. Use this during development. |
+    | **Release** | Optimized build, symbols stripped. Use for performance testing. |
+    | **Dist** | Distribution build. Fully optimized, no debug output. |
+
+    For your first run, **Debug** is recommended.
+  </Step>
+
+  <Step title="Build and run">
+    Press **Ctrl+Shift+B** to build the entire solution, then press **F5** (or **Ctrl+F5**) to run the startup project.
+
+    - To run the **Stag** editor, right-click the `Stag` project in Solution Explorer and choose **Set as Startup Project**, then run.
+    - To run the **Sandbox** test app, do the same for the `Sandbox` project.
+
+    Build output lands in `bin/<Configuration>-windows-x86_64/<ProjectName>/`.
+  </Step>
+</Steps>
+
+## How the entry point works
+
+Every Beetle application follows the same two-step pattern: subclass `Beetle::Application` and implement the `CreateApplication()` factory function. The engine's `EntryPoint.h` calls `CreateApplication()` internally and owns the application lifecycle — you never write `main()` yourself.
+
+Here is the complete entry point from the Sandbox project:
+
+```cpp
+#include <Beetle.h>
+#include <Beetle/Core/EntryPoint.h>
+#include "Sandbox2D.h"
+
+class Sandbox : public Beetle::Application
+{
+public:
+    Sandbox()
+    {
+        PushLayer(new Sandbox2D());
+    }
+    ~Sandbox() {}
+};
+
+Beetle::Application* Beetle::CreateApplication()
+{
+    return new Sandbox();
+}
+```
+
+The Stag editor follows the same pattern, passing a window title to the base constructor:
+
+```cpp
+#include <Beetle.h>
+#include <Beetle/Core/EntryPoint.h>
+#include "EditorLayer.h"
+
+namespace Beetle {
+    class Stag : public Application
+    {
+    public:
+        Stag() : Application("Stag")
+        {
+            PushLayer(new EditorLayer());
+        }
+        ~Stag() {}
+    };
+
+    Application* CreateApplication()
+    {
+        return new Stag();
+    }
+}
+```
+
+To create your own minimal application, implement `CreateApplication()` and push at least one `Beetle::Layer` onto the stack. The engine handles the run loop, event dispatch, and shutdown for you.
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Project structure" icon="folder-tree" href="/project-structure">
+    Learn how the engine, editor, sandbox, and vendor libraries are laid out on disk.
+  </Card>
+  <Card title="Core systems" icon="gears" href="/core/application">
+    Explore the Application loop, Layer stack, logging, and event system in depth.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

@@ -1,0 +1,218 @@
+---
+title: "Stag: the official Beetle Engine editor application"
+description: "Stag is Beetle Engine's official editor application. It hosts the EditorLayer for viewport rendering, scene management, and ImGui-driven scene editing tools."
+---
+
+Stag is the official editor application that ships with Beetle Engine. It is structured as a standard Beetle `Application` subclass that pushes a single `EditorLayer` onto the layer stack at startup. Because Stag is set as the premake `startproject`, it is the first project that builds and runs when you open the solution. All editor functionality — viewport rendering, scene management, entity inspection, and the ImGui dockspace — lives inside `EditorLayer`.
+
+## How Stag boots
+
+`StagEditorApp.cpp` defines the `Stag` application class and the `CreateApplication` factory function that the engine entry point calls. The constructor pushes `EditorLayer` and nothing else, though a commented-out `ExampleLayer` call shows where you would add extra layers during development.
+
+```cpp StagEditorApp.cpp
+#include <Beetle.h>
+#include <Beetle/Core/EntryPoint.h>
+#include "EditorLayer.h"
+
+namespace Beetle {
+    class Stag : public Application
+    {
+    public:
+        Stag() : Application("Stag")
+        {
+            //PushLayer(new ExampleLayer());
+            PushLayer(new EditorLayer());
+        }
+        ~Stag() {}
+    };
+
+    Application* CreateApplication()
+    {
+        return new Stag();
+    }
+}
+```
+
+<Note>
+Stag is the premake `startproject` target. Running the generated solution or Makefile will build and launch the Stag editor by default.
+</Note>
+
+## EditorLayer class structure
+
+`EditorLayer` extends `Beetle::Layer` and owns all editor-specific state. Below is the full class declaration from `EditorLayer.h`.
+
+```cpp EditorLayer.h
+namespace Beetle {
+    class EditorLayer : public Layer
+    {
+    public:
+        EditorLayer();
+        virtual ~EditorLayer() = default;
+        virtual void OnAttach() override;
+        virtual void OnDetach() override;
+
+        void OnUpdate(TimeStamp ts) override;
+        virtual void OnImGuiRender() override;
+        void OnEvent(Event& event) override;
+
+    private:
+        OrthographicCameraController m_CameraController;
+
+        // temp
+        Ref<VertexArray> m_SquareVA;
+        Ref<Shader> m_flatColorShader;
+        Ref<FrameBuffer> m_FrameBuffer;
+
+        Ref<Scene> m_ActiveScene;
+        Entity m_SquareEntity;
+
+        Ref<Texture2D> m_CheckerBoard;
+
+        bool m_ViewportFocused = false, m_ViewportHovered = false;
+        glm::vec2 m_ViewportSize = { 0.f, 0.f };
+
+        glm::vec4 m_SquareColor = { .2f, .3f, .8f, 1.f };
+    };
+}
+```
+
+### Key members
+
+| Member | Type | Purpose |
+|---|---|---|
+| `m_CameraController` | `OrthographicCameraController` | Drives the editor camera; receives input only when the viewport is focused |
+| `m_FrameBuffer` | `Ref<FrameBuffer>` | Off-screen render target; its color attachment is displayed as the viewport image |
+| `m_ActiveScene` | `Ref<Scene>` | The scene being edited; entities are created and updated through this object |
+| `m_SquareEntity` | `Entity` | A sample entity added on startup to demonstrate the scene/component system |
+| `m_CheckerBoard` | `Ref<Texture2D>` | Checkerboard texture used as a visual background reference |
+| `m_SquareColor` | `glm::vec4` | Color exposed to the ImGui Settings panel via `ColorEdit4` |
+| `m_ViewportFocused` / `m_ViewportHovered` | `bool` | Track ImGui window state to gate camera input and ImGui event blocking |
+
+## Layer lifecycle
+
+`OnAttach` runs once when the layer is pushed. It creates the checkerboard texture, allocates a 1280×720 `FrameBuffer`, instantiates the active scene, and registers a "Square" entity with a `SpriteRendererComponent`.
+
+```cpp EditorLayer.cpp — OnAttach
+void EditorLayer::OnAttach()
+{
+    m_CheckerBoard = Texture2D::Create("assets/textures/Checkerboard.png");
+
+    FrameBufferSpecification fbSpec;
+    fbSpec.Width = 1280;
+    fbSpec.Height = 720;
+    m_FrameBuffer = FrameBuffer::Create(fbSpec);
+
+    m_ActiveScene = CreateRef<Scene>();
+
+    auto square = m_ActiveScene->CreateEntity("Sqaure");
+    square.AddComponent<SpriteRendererComponent>(glm::vec4{ 0.0f, 1.0f, 0.0f, 1.0f });
+
+    m_SquareEntity = square;
+}
+```
+
+## Viewport rendering
+
+Each frame, `OnUpdate` renders the scene into the `FrameBuffer` rather than directly to the screen. The sequence is:
+
+<Steps>
+  <Step title="Resize check">
+    If `m_ViewportSize` has changed since the last frame, `m_FrameBuffer` and `m_CameraController` are both resized to match.
+  </Step>
+  <Step title="Camera update">
+    `m_CameraController.OnUpdate(ts)` runs only when `m_ViewportFocused` is `true`, preventing accidental camera movement when another ImGui panel is active.
+  </Step>
+  <Step title="Off-screen render pass">
+    `m_FrameBuffer->Bind()` redirects all draw calls to the off-screen target. `Renderer2D::BeginScene` / `EndScene` wraps the scene's `OnUpdate`, which processes each entity's components.
+  </Step>
+  <Step title="Unbind">
+    `m_FrameBuffer->Unbind()` restores the default framebuffer so ImGui can composite the result.
+  </Step>
+</Steps>
+
+```cpp EditorLayer.cpp — OnUpdate (render section)
+Renderer2D::ResetStats();
+m_FrameBuffer->Bind();
+RendererCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1 });
+RendererCommand::Clear();
+
+Renderer2D::BeginScene(m_CameraController.GetCamera());
+m_ActiveScene->OnUpdate(ts);
+Renderer2D::EndScene();
+
+m_FrameBuffer->Unbind();
+```
+
+## ImGui dockspace and viewport panel
+
+`OnImGuiRender` sets up a full-screen ImGui dockspace that hosts two panels: **Settings** and **Viewport**.
+
+The Viewport panel reads the focused and hovered state of the ImGui window to control event blocking, then displays the framebuffer's color attachment as an `ImGui::Image`. Flipped UV coordinates (`ImVec2{0,1}` to `ImVec2{1,0}`) correct for OpenGL's bottom-left texture origin.
+
+```cpp EditorLayer.cpp — Viewport panel
+ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{ 0, 0 });
+ImGui::Begin("Viewport");
+
+m_ViewportFocused = ImGui::IsWindowFocused();
+m_ViewportHovered = ImGui::IsWindowHovered();
+Application::Get().GetImGuiLayer()->BlockEvents(!m_ViewportFocused || !m_ViewportHovered);
+
+ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
+// resize framebuffer if panel size changed
+if (m_ViewportSize != *((glm::vec2*)&viewportPanelSize) && viewportPanelSize.x > 0 && viewportPanelSize.y > 0)
+{
+    m_FrameBuffer->Resize((uint32_t)viewportPanelSize.x, (uint32_t)viewportPanelSize.y);
+    m_ViewportSize = { viewportPanelSize.x, viewportPanelSize.y };
+    m_CameraController.OnResize(viewportPanelSize.x, viewportPanelSize.y);
+}
+
+uint32_t textureID = m_FrameBuffer->GetColorAttachmentRendererID();
+ImGui::Image((void*)textureID, ImVec2{ m_ViewportSize.x, m_ViewportSize.y }, ImVec2{ 0, 1 }, ImVec2{ 1, 0 });
+ImGui::End();
+ImGui::PopStyleVar();
+```
+
+## Extending the editor
+
+To add new editor functionality, subclass `Layer`, implement the lifecycle methods you need, and push your layer in `StagEditorApp.cpp`.
+
+<Steps>
+  <Step title="Create your layer">
+    ```cpp MyInspectorLayer.h
+    #pragma once
+    #include "Beetle.h"
+
+    namespace Beetle {
+        class MyInspectorLayer : public Layer
+        {
+        public:
+            MyInspectorLayer() : Layer("MyInspector") {}
+            void OnImGuiRender() override;
+        };
+    }
+    ```
+  </Step>
+  <Step title="Implement OnImGuiRender">
+    ```cpp MyInspectorLayer.cpp
+    void MyInspectorLayer::OnImGuiRender()
+    {
+        ImGui::Begin("My Inspector");
+        // your widgets here
+        ImGui::End();
+    }
+    ```
+  </Step>
+  <Step title="Push onto the application">
+    In `StagEditorApp.cpp`, add a `PushLayer` call inside the `Stag` constructor:
+
+    ```cpp StagEditorApp.cpp
+    Stag() : Application("Stag")
+    {
+        PushLayer(new EditorLayer());
+        PushLayer(new MyInspectorLayer());
+    }
+    ```
+  </Step>
+</Steps>
+
+Layers are updated and rendered in push order, so panels added after `EditorLayer` will render on top of it inside the dockspace.

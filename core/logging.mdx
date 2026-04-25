@@ -1,0 +1,159 @@
+---
+title: "Structured logging with spdlog in Beetle Engine"
+description: "Learn how to use Beetle's two-logger system — core and client — and the macro shortcuts that make debug output fast and consistent across your project."
+---
+
+Beetle Engine ships a thin wrapper around [spdlog](https://github.com/gabime/spdlog) that gives you two independent, colour-coded loggers: one for engine-internal messages and one for your application code. Both are available immediately at startup via short macros — no setup required in client code.
+
+---
+
+## The Log class
+
+`Beetle::Log` (`Beetle/Core/Log.h`) holds two static `spdlog::logger` instances and exposes them through getter functions.
+
+```cpp
+namespace Beetle {
+    class Log
+    {
+    public:
+        static void Init();
+
+        static std::shared_ptr<spdlog::logger>& GetCoreLogger();
+        static std::shared_ptr<spdlog::logger>& GetClientLogger();
+    };
+}
+```
+
+`Log::Init()` is called by `EntryPoint.h` **before** `CreateApplication()` runs, so the loggers are always ready by the time your constructor executes. You do not need to call it yourself.
+
+```cpp
+// EntryPoint.h (engine-managed)
+int main(int argc, char** argv)
+{
+    Beetle::Log::Init();   // <-- happens automatically
+
+    auto app = Beetle::CreateApplication();
+    app->Run();
+    delete app;
+}
+```
+
+`Init()` configures spdlog with the pattern `%^[%T] %n: %v%$`:
+
+| Token | Meaning |
+|---|---|
+| `%^` / `%$` | Begin / end colour range |
+| `%T` | Timestamp (HH:MM:SS) |
+| `%n` | Logger name (`BEETLE` or `APP`) |
+| `%v` | The log message |
+
+---
+
+## Core vs client loggers
+
+<CardGroup cols={2}>
+  <Card title="Core logger (BEETLE)" icon="gear">
+    Used by engine internals. The logger name tag is `BEETLE`. Use the `BT_CORE_*` macros inside engine source. Never use these in client application code.
+  </Card>
+  <Card title="Client logger (APP)" icon="user">
+    Used by your application code. The logger name tag is `APP`. Use the `BT_*` macros (without `CORE`) in all your layers and game logic.
+  </Card>
+</CardGroup>
+
+---
+
+## Logging macros
+
+All macros accept printf-style format strings powered by `{fmt}` (bundled with spdlog). You can pass any number of arguments.
+
+### Core macros
+
+Use these only inside engine source files:
+
+```cpp
+BT_CORE_TRACE(...);   // verbose debug — grey
+BT_CORE_INFO(...);    // informational — white/green
+BT_CORE_WARN(...);    // warning — yellow
+BT_CORE_ERROR(...);   // non-fatal error — red
+BT_CORE_FATAL(...);   // fatal — bright red
+```
+
+### Client macros
+
+Use these in your application layers, scripts, and game code:
+
+```cpp
+BT_TRACE(...);   // verbose debug — grey
+BT_INFO(...);    // informational — white/green
+BT_WARN(...);    // warning — yellow
+BT_ERROR(...);   // non-fatal error — red
+BT_FATAL(...);   // fatal — bright red
+```
+
+Both sets expand directly to spdlog calls:
+
+```cpp
+// From Log.h
+#define BT_INFO(...)  ::Beetle::Log::GetClientLogger()->info(__VA_ARGS__);
+#define BT_WARN(...)  ::Beetle::Log::GetClientLogger()->warn(__VA_ARGS__);
+// ... and so on
+```
+
+---
+
+## Using logging in a layer
+
+Here is how you would add logging to a custom layer at different severity levels:
+
+```cpp
+#include "Beetle.h"
+
+class GameLayer : public Beetle::Layer
+{
+public:
+    GameLayer() : Layer("GameLayer") {}
+
+    void OnAttach() override
+    {
+        BT_INFO("GameLayer attached");
+        m_Texture = Beetle::Texture2D::Create("assets/textures/player.png");
+
+        if (!m_Texture)
+            BT_ERROR("Failed to load player texture!");
+    }
+
+    void OnUpdate(Beetle::TimeStamp ts) override
+    {
+        BT_TRACE("OnUpdate: {0:.4f} ms", ts.GetMilliseconds());
+
+        if (ts.GetSeconds() > 0.1f)
+            BT_WARN("Frame spike detected: {0:.2f} ms", ts.GetMilliseconds());
+    }
+
+    void OnEvent(Beetle::Event& event) override
+    {
+        BT_TRACE("Event received: {0}", event);
+    }
+
+private:
+    Beetle::Ref<Beetle::Texture2D> m_Texture;
+};
+```
+
+---
+
+## When to use core vs client macros
+
+<Accordion title="Decision guide">
+
+**Use `BT_CORE_*`** when you are writing code that lives inside the `Beetle` namespace or in engine source files. Examples: renderer internals, platform window code, the layer stack implementation.
+
+**Use `BT_*`** (no `CORE`) when you are writing application or game code. Examples: your `Layer` subclasses, `Application` subclass constructor, any file in your `Sandbox` or game project.
+
+The separation means you can silence engine-internal noise (by adjusting the core logger level) without affecting your own application output, and vice versa.
+
+</Accordion>
+
+<Tip>
+Use `BT_TRACE` liberally during development. Both loggers are initialised at `spdlog::level::trace` so all messages are visible by default. When you ship, raise the log level to `info` or `warn` by calling `Beetle::Log::GetClientLogger()->set_level(spdlog::level::warn)` at startup to suppress verbose output without removing the macro calls from your source.
+</Tip>

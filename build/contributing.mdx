@@ -1,0 +1,153 @@
+---
+title: "Contributing code and systems to Beetle Engine"
+description: "Learn how to fork Beetle, follow its C++17 coding conventions, use BT_ macros and smart pointer aliases correctly, and add new engine subsystems step by step."
+---
+
+Beetle Engine is primarily an educational project — it exists to explore how real game engines are structured, not to ship a production product. That said, the repository is open to forks, experiments, and constructive feedback. If you want to add a feature, fix a bug, or try out a new engine subsystem, this page covers the conventions you need to follow to keep the codebase consistent.
+
+<Tip>
+  Use the **Sandbox** project as your rapid-prototyping environment. It links directly against the `Beetle` static library and gives you a clean `main` entry point where you can exercise any engine API without touching the engine code itself. Start there before wiring a new system into the engine proper.
+</Tip>
+
+## Forking and branching
+
+1. Fork the repository on GitHub.
+2. Clone your fork locally with all submodules:
+
+   ```bash
+   git clone --recurse-submodules https://github.com/<your-username>/Beetle.git
+   ```
+
+3. Create a feature branch from `main`:
+
+   ```bash
+   git checkout -b feature/my-new-system
+   ```
+
+4. Open a pull request against the upstream `main` branch when your changes are ready for review.
+
+Keep branches focused. One branch per feature or fix makes reviews easier and keeps history readable.
+
+## C++ conventions
+
+Beetle targets **C++17** throughout. All three projects (`Beetle`, `Sandbox`, `Stag`) set `cppdialect "C++17"` in `premake5.lua`, so you can freely use structured bindings, `if constexpr`, `std::optional`, and other C++17 features.
+
+### Include style
+
+Use root-relative includes from the engine `src/` directory, not relative paths:
+
+```cpp
+// Correct
+#include "Beetle/Core/Core.h"
+#include "Beetle/Events/Event.h"
+#include "Beetle/Renderer/Renderer.h"
+
+// Avoid
+#include "../../Core/Core.h"
+```
+
+This works because both the `Beetle` project and client projects add `Beetle/src` to their `includedirs` in `premake5.lua`.
+
+### Namespace
+
+All engine code lives in the `Beetle` namespace:
+
+```cpp
+namespace Beetle {
+
+class Renderer
+{
+public:
+    void Init();
+};
+
+} // namespace Beetle
+```
+
+Client code (Sandbox, Stag, or your game project) references engine types via the namespace explicitly or with a `using namespace Beetle;` in local scopes.
+
+## BT_ macro prefix convention
+
+All engine macros use the `BT_` prefix. The key macros defined in `Beetle/src/Beetle/Core/Core.h` are:
+
+| Macro | Purpose |
+|---|---|
+| `BT_ASSERT(x, ...)` | Client-side assertion; triggers `__debugbreak()` in Debug builds |
+| `BT_CORE_ASSERT(x, ...)` | Engine-side assertion; uses `BT_CORE_ERROR` for the message |
+| `BT_DEBUG` | Defined in Debug configuration; enables `BT_ENABLE_ASSERTS` |
+| `BT_Release` | Defined in Release configuration |
+| `BT_DIST` | Defined in Dist configuration |
+| `BT_PLATFORM_WINDOWS` | Defined on Windows; set by both Premake and `Core.h` platform detection |
+| `BIT(x)` | Left-shifts 1 by `x`; used for event category bitmasks |
+| `BEETLE_BIND_EVENT_FN(fn)` | Wraps a member function in `std::bind` for use as an event callback |
+
+When you add new macros, follow the same `BT_` prefix and place them in the appropriate header under `Beetle/src/Beetle/Core/`.
+
+## Smart pointer conventions
+
+Beetle defines two alias templates in `namespace Beetle` instead of using `std::shared_ptr` and `std::unique_ptr` directly:
+
+```cpp
+// In Beetle/src/Beetle/Core/Core.h
+
+template<typename T>
+using Ref = std::shared_ptr<T>;
+
+template<typename T, typename... Args>
+constexpr Ref<T> CreateRef(Args&&... args)
+{
+    return std::make_shared<T>(std::forward<Args>(args)...);
+}
+
+template<typename T>
+using Scope = std::unique_ptr<T>;
+
+template<typename T, typename... Args>
+constexpr Scope<T> CreateScope(Args&&... args)
+{
+    return std::make_unique<T>(std::forward<Args>(args)...);
+}
+```
+
+Always use `Ref<T>` and `Scope<T>` in engine code instead of raw `std::shared_ptr` or `std::unique_ptr`. This keeps ownership semantics explicit and makes future changes to the underlying pointer type easier:
+
+```cpp
+// Correct
+Ref<Texture2D> m_Texture = CreateRef<Texture2D>("assets/sprite.png");
+Scope<RenderAPI> m_API   = CreateScope<OpenGLRenderAPI>();
+
+// Avoid
+std::shared_ptr<Texture2D> m_Texture = std::make_shared<Texture2D>("assets/sprite.png");
+```
+
+## Adding a new engine system
+
+Follow these steps when introducing a new subsystem (for example, an audio system):
+
+1. **Create a subdirectory** under `Beetle/src/Beetle/`:
+
+   ```
+   Beetle/src/Beetle/Audio/
+   Beetle/src/Beetle/Audio/Audio.h
+   Beetle/src/Beetle/Audio/Audio.cpp
+   ```
+
+2. **Add public headers to `Beetle.h`** so client projects can include the system with a single line:
+
+   ```cpp
+   // Beetle/src/Beetle.h
+   #include "Beetle/Audio/Audio.h"
+   ```
+
+3. **Register any new include directories in `premake5.lua`** if the system depends on a new vendor library. Add an entry to the `IncludeDir` table and the `includedirs` block of the `Beetle` project, then re-run `premake5 vs2022`.
+
+4. **Include `btpch.h` first** in every new `.cpp` file inside `Beetle/src/` to satisfy the precompiled header requirement:
+
+   ```cpp
+   #include "btpch.h"
+   #include "Beetle/Audio/Audio.h"
+   ```
+
+## License
+
+Beetle Engine is licensed under the **Apache License 2.0**. By contributing, you agree that your changes will be distributed under the same license. See the `LICENSE` file at the repository root for the full terms.

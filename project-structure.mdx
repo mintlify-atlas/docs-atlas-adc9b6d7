@@ -1,0 +1,141 @@
+---
+title: "Beetle Engine multi-project workspace layout"
+description: "An overview of the multi-project workspace: the Beetle static library, the Sandbox test client, the Stag editor, and how vendored dependencies are organized."
+---
+
+Beetle Engine is organized as a three-project Premake workspace. **Beetle** is the engine itself, compiled as a static library. **Sandbox** is a lightweight client application used to experiment with engine features during development. **Stag** is the full Beetle editor and the default startup project. All three projects live in the same solution and share a single `premake5.lua` at the repository root.
+
+<CardGroup cols={3}>
+  <Card title="Beetle" icon="microchip">
+    The core engine compiled as a static library (`StaticLib`). Contains all engine systems: application, layers, events, renderer, scene, and ImGui integration.
+  </Card>
+  <Card title="Sandbox" icon="flask">
+    A minimal console application (`ConsoleApp`) that links against `Beetle`. Used as a quick test bed for engine features without loading the full editor.
+  </Card>
+  <Card title="Stag" icon="pen-to-square">
+    The Beetle editor application (`ConsoleApp`). Also links against `Beetle` and is set as the workspace startup project by default.
+  </Card>
+</CardGroup>
+
+## Directory layout
+
+The following tree reflects what you will find after cloning the repository:
+
+```
+Beetle/                          # Repository root
+├── premake5.lua                 # Workspace + project build script
+├── Beetle.sln                   # Generated Visual Studio solution
+├── scripts/
+│   └── Win-GenProjects.bat      # Helper script: runs premake5 vs2022
+│
+├── Beetle/                      # Engine static library project
+│   ├── src/
+│   │   ├── Beetle.h             # Single engine include (client-facing)
+│   │   ├── btpch.h              # Precompiled header
+│   │   ├── btpch.cpp
+│   │   ├── Beetle/              # Engine source tree (clean include root)
+│   │   │   ├── Core/            # Application, Layer, Log, Input, EntryPoint
+│   │   │   ├── Events/          # Event, KeyEvent, MouseEvent
+│   │   │   ├── Renderer/        # Renderer2D, Shader, Texture, Buffer, Camera
+│   │   │   ├── Scene/           # Scene, Entity, Components (entt-backed)
+│   │   │   ├── ImGui/           # ImGuiLayer
+│   │   │   └── Debug/           # Profiling / instrumentation
+│   │   └── Platform/            # Platform-specific implementations (Windows)
+│   └── vendor/                  # Third-party libraries (source included)
+│       ├── GLFW/
+│       ├── Glad/
+│       ├── imgui/
+│       ├── glm/
+│       ├── spdlog/
+│       ├── entt/
+│       └── stb_image/
+│
+├── Sandbox/                     # Test client application
+│   └── src/
+│       ├── SandboxApp.cpp       # CreateApplication() entry point
+│       └── Sandbox2D.h/.cpp     # Example layer
+│
+├── Stag/                        # Beetle editor application
+│   └── src/
+│       ├── StagEditorApp.cpp    # CreateApplication() entry point
+│       └── EditorLayer.h/.cpp   # Editor layer
+│
+└── bin/                         # Build output (generated)
+    └── <Config>-windows-x64/
+        ├── Beetle/
+        ├── Sandbox/
+        └── Stag/
+```
+
+## Top-level folders explained
+
+### `Beetle/` — the engine library
+
+This is the heart of the project. Premake compiles everything under `Beetle/src/` into a static library that Sandbox and Stag both link against. Third-party source libraries that need to be compiled (GLFW, Glad, ImGui) live in `Beetle/vendor/` and are included in the workspace as separate Premake projects under the `Dependencies` group.
+
+### `Sandbox/` — test client
+
+Sandbox is a console application that exists solely to exercise engine features during development. It is the fastest way to prototype a new system without touching the editor. Its `SandboxApp.cpp` contains the minimal boilerplate required to boot any Beetle application.
+
+### `Stag/` — the Beetle editor
+
+Stag is the primary editor application. It is the default startup project in the generated solution (`startproject "Stag"` in `premake5.lua`). The editor is itself a Beetle client — it subclasses `Beetle::Application` and pushes an `EditorLayer` exactly as any other client would.
+
+### `scripts/` — build helpers
+
+Contains `Win-GenProjects.bat`, a convenience script that calls `premake5 vs2022` so you do not have to remember the command. Run it any time you add or remove files that are not picked up by globbing.
+
+### `vendor/` (inside `Beetle/`) — third-party libraries
+
+All dependencies are vendored directly into the repository as source. Premake configures each one. No package manager is required.
+
+| Library | Purpose |
+|---|---|
+| **GLFW** | Window creation and OpenGL context management |
+| **Glad** | OpenGL extension loader |
+| **imgui** | Immediate-mode debug UI |
+| **glm** | Mathematics library (vectors, matrices, quaternions) |
+| **spdlog** | Fast, header-only logging |
+| **entt** | Entity Component System registry |
+| **stb_image** | Single-header image loading |
+
+## The clean include convention
+
+Beetle's source is structured so that the `Beetle/src/` directory is added to the include path for all projects. This means you never use relative paths like `../../Core/Application.h`. Instead, every include reads cleanly from the `Beetle/` namespace root:
+
+```cpp
+#include "Beetle/Core/Application.h"
+#include "Beetle/Core/Layer.h"
+#include "Beetle/Core/Log.h"
+#include "Beetle/Events/Event.h"
+#include "Beetle/Renderer/Renderer2D.h"
+#include "Beetle/Scene/Scene.h"
+```
+
+Client projects (Sandbox and Stag) include the single aggregated header instead:
+
+```cpp
+#include <Beetle.h>
+```
+
+`Beetle.h` re-exports every public engine header in one place, so client code never needs to enumerate individual subsystem headers. The entry point header is included separately because it defines `main()` and must only appear in one translation unit:
+
+```cpp
+#include <Beetle/Core/EntryPoint.h>
+```
+
+<Tip>
+  If you add new source files to any project, re-run `premake5 vs2022` (or `scripts\Win-GenProjects.bat`) so Visual Studio picks them up. The Premake glob patterns (`**.h`, `**.cpp`) automatically include new files the next time project files are regenerated.
+</Tip>
+
+## Build output layout
+
+Premake writes compiled binaries to `bin/` using the pattern `<Configuration>-<OS>-<Architecture>`. For a Debug build on Windows x64 the paths are:
+
+```
+bin/Debug-windows-x64/Beetle/Beetle.lib
+bin/Debug-windows-x64/Sandbox/Sandbox.exe
+bin/Debug-windows-x64/Stag/Stag.exe
+```
+
+Intermediate object files go to `bin-int/` with the same naming scheme and are safe to delete at any time.

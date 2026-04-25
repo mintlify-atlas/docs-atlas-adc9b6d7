@@ -1,0 +1,195 @@
+---
+title: "Orthographic camera and input controller in Beetle"
+description: "OrthographicCamera holds the view-projection matrix for 2D scenes; OrthographicCameraController wires WASD, Q/E rotation, and scroll-wheel zoom to it automatically."
+---
+
+Beetle provides two classes for 2D camera work. `OrthographicCamera` owns the mathematical state — projection bounds, position, rotation, and the combined view-projection matrix. `OrthographicCameraController` sits on top and translates keyboard and mouse input into camera mutations each frame. You use the camera through `Renderer2D::BeginScene` and the controller in your layer's `OnUpdate` and `OnEvent`.
+
+## `OrthographicCamera`
+
+### Construction
+
+```cpp
+OrthographicCamera(float left, float right, float bottom, float top);
+```
+
+The constructor takes the four clipping planes of the orthographic projection in world units. A common starting point for a 16:9 viewport at zoom level 1:
+
+```cpp
+// Aspect ratio 16:9, zoom = 1
+Beetle::OrthographicCamera camera(-1.778f, 1.778f, -1.0f, 1.0f);
+```
+
+You can also update the projection at any time — for example, after a window resize:
+
+```cpp
+camera.SetProjection(-aspectRatio, aspectRatio, -1.0f, 1.0f);
+```
+
+### Position and rotation
+
+```cpp
+camera.SetPosition({ 0.5f, 1.0f, 0.0f });   // move right and up
+camera.SetRotation(45.0f);                   // degrees, counter-clockwise
+```
+
+Both setters immediately recalculate the internal view matrix and the cached view-projection matrix, so subsequent calls to `GetViewProjectionMatrix` return the updated value.
+
+### Matrix accessors
+
+| Method | Returns |
+|---|---|
+| `GetProjectionMatrix()` | The orthographic projection matrix. |
+| `GetViewMatrix()` | The inverse-transform view matrix (position + rotation). |
+| `GetViewProjectionMatrix()` | `projection * view` — what you pass to `BeginScene`. |
+
+## `OrthographicCameraController`
+
+The controller owns an `OrthographicCamera` instance and handles all the input logic for you. It dispatches `MouseScrolledEvent` and `WindowResizeEvent` automatically when you call `OnEvent`.
+
+### Construction
+
+```cpp
+OrthographicCameraController(float aspectRatio, bool rotation = false);
+```
+
+- **`aspectRatio`** — width divided by height (e.g. `1280.0f / 720.0f`). The controller initializes the camera's projection bounds to `[-aspectRatio * zoom, aspectRatio * zoom, -zoom, zoom]`.
+- **`rotation`** — pass `true` to enable Q/E keyboard rotation. Rotation is disabled by default.
+
+```cpp
+// 16:9, rotation enabled
+Beetle::OrthographicCameraController m_CameraController(1280.0f / 720.0f, true);
+```
+
+### Input bindings
+
+The controller reads input every frame in `OnUpdate`:
+
+| Action | Key / Device |
+|---|---|
+| Move left | `A` |
+| Move right | `D` |
+| Move up | `W` |
+| Move down | `S` |
+| Rotate counter-clockwise | `Q` (only when `rotation = true`) |
+| Rotate clockwise | `E` (only when `rotation = true`) |
+| Zoom in/out | Mouse scroll wheel |
+
+Movement speed is updated to match the current zoom level at the end of each `OnUpdate` call (`m_CameraTranslationSpeed = m_ZoomLevel`), so the camera feels consistent at any zoom. Rotation speed is fixed at 180°/s. Zoom adjusts by `0.25` units per scroll tick and is clamped to a minimum of `0.25` to prevent inverting the projection.
+
+### `OnUpdate(TimeStamp ts)`
+
+Call this at the beginning of your layer's `OnUpdate` to apply the current frame's input:
+
+```cpp
+void MyLayer::OnUpdate(Beetle::TimeStamp ts)
+{
+    m_CameraController.OnUpdate(ts);
+    // ... rendering ...
+}
+```
+
+### `OnEvent(Event&)`
+
+Forward all events to the controller so it can respond to scroll and resize events:
+
+```cpp
+void MyLayer::OnEvent(Beetle::Event& event)
+{
+    m_CameraController.OnEvent(event);
+}
+```
+
+### `OnResize(float width, float height)`
+
+Call this when the viewport dimensions change manually (e.g. from an editor panel resize that doesn't fire a `WindowResizeEvent`):
+
+```cpp
+m_CameraController.OnResize(viewportWidth, viewportHeight);
+```
+
+This recalculates `m_AspectRatio` and calls `SetProjection` on the owned camera.
+
+### `GetCamera()`
+
+Returns a reference to the internal `OrthographicCamera`. Pass this directly to `Renderer2D::BeginScene`:
+
+```cpp
+Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+```
+
+## Using the camera in a layer
+
+<Steps>
+  <Step title="Declare the controller in your layer header">
+    ```cpp
+    class GameLayer : public Beetle::Layer
+    {
+    public:
+        GameLayer();
+        void OnAttach() override;
+        void OnUpdate(Beetle::TimeStamp ts) override;
+        void OnEvent(Beetle::Event& event) override;
+
+    private:
+        Beetle::OrthographicCameraController m_CameraController;
+    };
+    ```
+  </Step>
+  <Step title="Initialize in the constructor">
+    ```cpp
+    GameLayer::GameLayer()
+        : Layer("GameLayer"),
+          m_CameraController(1280.0f / 720.0f, true) // 16:9, rotation on
+    {
+    }
+    ```
+  </Step>
+  <Step title="Update and render in OnUpdate">
+    ```cpp
+    void GameLayer::OnUpdate(Beetle::TimeStamp ts)
+    {
+        // Update camera from input
+        m_CameraController.OnUpdate(ts);
+
+        // Clear
+        Beetle::RendererCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+        Beetle::RendererCommand::Clear();
+
+        // Render scene
+        Beetle::Renderer2D::BeginScene(m_CameraController.GetCamera());
+        Beetle::Renderer2D::DrawQuad({ 0.0f, 0.0f }, { 1.0f, 1.0f },
+                                     { 0.2f, 0.8f, 0.3f, 1.0f });
+        Beetle::Renderer2D::EndScene();
+    }
+    ```
+  </Step>
+  <Step title="Forward events in OnEvent">
+    ```cpp
+    void GameLayer::OnEvent(Beetle::Event& event)
+    {
+        m_CameraController.OnEvent(event);
+    }
+    ```
+  </Step>
+</Steps>
+
+## Zoom and projection relationship
+
+The zoom level directly scales the projection half-extents. At zoom = `1.0` and aspect ratio = `1.778`, the projection covers ±1.778 in X and ±1.0 in Y. Scrolling in halves the zoom level to `0.5`, which tightens the bounds to ±0.889 × ±0.5 — effectively doubling the visual size of everything in the scene. The minimum zoom is clamped to `0.25`.
+
+```
+projection left  = -aspectRatio * zoomLevel
+projection right =  aspectRatio * zoomLevel
+projection bottom = -zoomLevel
+projection top    =  zoomLevel
+```
+
+You can read or set the zoom level directly if you need to programmatically animate the camera:
+
+```cpp
+float currentZoom = m_CameraController.GetZoomLevel();
+m_CameraController.SetZoomLevel(currentZoom * 0.5f); // zoom in by 2×
+```
+
+After calling `SetZoomLevel`, you should also call `OnResize` (passing the current dimensions) to push the updated projection bounds into the camera object.

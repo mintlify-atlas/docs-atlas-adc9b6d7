@@ -1,0 +1,152 @@
+---
+title: "Premake5 workspace and build configuration guide"
+description: "Understand how premake5.lua defines the Beetle workspace, configures vendor dependencies, and learn how to add new projects or include directories."
+---
+
+Beetle's entire build system lives in a single `premake5.lua` file at the repository root. It defines one workspace containing three projects, wires up all vendor include paths, pulls in compiled vendor libraries, and configures per-project precompiled headers. Understanding this file is essential before adding new engine modules or third-party dependencies.
+
+<Note>
+  Any time you modify `premake5.lua` — to add a project, change an include path, or add a new vendor library — you must re-run `premake5 vs2022` from the repository root to regenerate the Visual Studio solution before your changes take effect.
+</Note>
+
+## Workspace structure
+
+The file opens by declaring a workspace named `Beetle` targeting x64 and defining three build configurations:
+
+```lua
+workspace "Beetle"
+    architecture "x64"
+    startproject "Stag"
+
+    configurations
+    {
+        "Debug",
+        "Release",
+        "Dist"
+    }
+
+outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
+```
+
+`outputdir` is a reusable token that expands to strings like `Debug-windows-x86_64` and is used by every project to set `targetdir` and `objdir`.
+
+## Include directories
+
+All third-party include paths are declared in a shared `IncludeDir` table near the top of the file, so you can reference them consistently across projects:
+
+```lua
+IncludeDir = {}
+IncludeDir["GLFW"]      = "Beetle/vendor/GLFW/include"
+IncludeDir["Glad"]      = "Beetle/vendor/Glad/include"
+IncludeDir["ImGui"]     = "Beetle/vendor/imgui"
+IncludeDir["glm"]       = "Beetle/vendor/glm"
+IncludeDir["stb_image"] = "Beetle/vendor/stb_image"
+IncludeDir["entt"]      = "Beetle/vendor/entt/include"
+```
+
+To use an entry in a project's `includedirs` block, reference it as `%{IncludeDir.GLFW}` and so on.
+
+## Vendor dependency group
+
+GLFW, Glad, and ImGui each ship their own `premake5.lua` scripts inside `Beetle/vendor/`. The workspace includes them twice: once under a `"Dependencies"` group (which controls the Visual Studio solution folder they appear in) and once at the top level so Premake processes their project definitions:
+
+```lua
+group "Dependencies"
+    include "Beetle/vendor/GLFW"
+    include "Beetle/vendor/Glad"
+    include "Beetle/vendor/imgui"
+group ""
+
+include "Beetle/vendor/GLFW"
+include "Beetle/vendor/Glad"
+include "Beetle/vendor/imgui"
+```
+
+These vendor projects are linked into the `Beetle` static library via its `links` block:
+
+```lua
+links {
+    "GLFW",
+    "Glad",
+    "ImGui",
+    "opengl32.lib"
+}
+```
+
+Note that `spdlog` and `glm` are header-only libraries and do not need to appear in `links`.
+
+## Projects
+
+The workspace defines three projects:
+
+| Project | Kind | Purpose |
+|---|---|---|
+| `Beetle` | `StaticLib` | Core engine library |
+| `Sandbox` | `ConsoleApp` | Test bed for engine features |
+| `Stag` | `ConsoleApp` | Secondary client app; default startup project |
+
+Both `Sandbox` and `Stag` link against the `Beetle` static library and share the same configuration filters.
+
+## Precompiled header
+
+The `Beetle` project uses `btpch.h` as its precompiled header to speed up compilation of internal engine sources:
+
+```lua
+pchheader "btpch.h"
+pchsource "Beetle/src/btpch.cpp"
+```
+
+Include `btpch.h` as the first include in every `.cpp` file inside `Beetle/src/`. Client projects (Sandbox, Stag) do not use this precompiled header.
+
+## Adding a new project to the workspace
+
+To add a new project (for example, a game project called `MyGame`), append a project block after the existing ones:
+
+```lua
+project "MyGame"
+    location "MyGame"
+    kind "ConsoleApp"
+    language "C++"
+    cppdialect "C++17"
+    staticruntime "on"
+
+    targetdir ("bin/" .. outputdir .. "/%{prj.name}")
+    objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
+
+    files
+    {
+        "%{prj.name}/src/**.h",
+        "%{prj.name}/src/**.cpp",
+    }
+
+    includedirs
+    {
+        "Beetle/vendor/spdlog/include",
+        "Beetle/src",
+        "Beetle/vendor",
+        "%{IncludeDir.glm}",
+    }
+
+    links { "Beetle" }
+
+    filter "system:windows"
+        systemversion "latest"
+        defines { "BT_PLATFORM_WINDOWS" }
+
+    filter "configurations:Debug"
+        defines "BT_DEBUG"
+        runtime "Debug"
+        symbols "On"
+
+    filter "configurations:Release"
+        defines "BT_Release"
+        runtime "Release"
+        optimize "On"
+
+    filter "configurations:Dist"
+        defines "BT_DIST"
+        runtime "Release"
+        optimize "On"
+```
+
+After saving the file, run `premake5 vs2022` to regenerate the solution.
